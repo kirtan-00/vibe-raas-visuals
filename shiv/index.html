@@ -311,7 +311,7 @@ function spriteDamru(f, d) {
 }
 function spriteOm(f, d) {
   f.textAlign = 'center'; f.textBaseline = 'middle';
-  f.font = '400px "Kohinoor Devanagari","Devanagari Sangam MN","Devanagari MT","Noto Sans Devanagari",serif';
+  f.font = '380px "OmRozha","Kohinoor Devanagari","Devanagari Sangam MN",serif';
   f.fillText('ॐ', 256, 290);
   d.textAlign = 'center'; d.textBaseline = 'middle'; d.font = f.font;
   d.lineWidth = 7; d.strokeText('ॐ', 256, 290);
@@ -749,6 +749,14 @@ function upload(img) {
   return t;
 }
 let ATLAS = null, FIGIMG = null;
+// Om comes from the bundled Rozha One so it has the classic shape on every machine; rebuild the atlas once it loads
+try {
+  const omFace = new FontFace('OmRozha', 'url(../fonts/RozhaOne-Regular.ttf)');
+  omFace.load().then(f => {
+    document.fonts.add(f);
+    if (ATLAS && gl) { ATLAS = buildAtlas(); gl.activeTexture(gl.TEXTURE0); texA = upload(ATLAS); }
+  }).catch(() => {});
+} catch (e) {}
 function initGL() {
   prog = link(VS, FS, 'p');
   gl.useProgram(prog);
