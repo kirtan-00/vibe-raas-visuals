@@ -9,7 +9,7 @@
   if (!VR && Q.get('embed') !== '1') return;
   document.documentElement.classList.add('vr-embed');
   var st = document.createElement('style');
-  st.textContent = 'html.vr-embed #start{display:none!important}html.vr-embed body{cursor:none}';
+  st.textContent = 'html.vr-embed #start{display:none!important}html.vr-embed body{cursor:none}html.vr-embed #logo{display:none!important}'; // the show draws the centre logo
   document.head.appendChild(st);
   if (VR && VR.ctx) {
     var Fake = function () { return window.parent.__vr.ctx; };
@@ -29,7 +29,6 @@
     try { var s = document.getElementById('start'); if (s) s.classList.add('gone'); } catch (e) {}
     try { if (window.parent.__vrPal) setPalName(window.parent.__vrPal); } catch (e) {}
     try { if (window.parent.__vrK) setK(window.parent.__vrK); } catch (e) {}
-    try { if (window.parent.__vrLogo) document.getElementById('logo').classList.add('on'); } catch (e) {}
   });
   function setPalName(n) { for (var i = 0; i < 6; i++) { if (P().name === n) return; key('p'); } }
   function kObj() { try { if (typeof T !== 'undefined' && T && T.K !== undefined) return T; } catch (e) {} try { return S; } catch (e) {} return null; }
@@ -38,7 +37,6 @@
     if (c.type === 'pal') setPalName(c.name);
     else if (c.type === 'k') setK(c.value);
     else if (c.type === 'tap') key('t');
-    else if (c.type === 'logo') { var l = document.getElementById('logo'); if (l) l.classList.toggle('on', !!c.on); }
     else if (c.type === 'hud') key('h');
     else if (c.type === 'key') key(c.key);
   };
@@ -46,10 +44,12 @@
     var o = kObj();
     return { bpm: B.bpm, beats: B.count, energy: (typeof LV !== 'undefined' ? LV.energy : 0), pal: P().name, K: o ? o.K : 1 };
   };
-  // Q (pairing code) still works when the iframe has focus
+  // Q (pairing code), L (centre logo) and F (fullscreen) act on the show page even when the iframe has focus.
+  // The iframe itself is not allowed fullscreen, else it would cover the show's centre logo.
+  addEventListener('dblclick', function () { try { window.parent.__vrKey && window.parent.__vrKey('f'); } catch (x) {} });
   addEventListener('keydown', function (e) {
     if (!e.isTrusted) return;
-    if (e.key === 'q' || e.key === 'Q') { try { window.parent.__vrKey && window.parent.__vrKey(e.key); } catch (x) {} }
+    if (e.key === 'q' || e.key === 'Q' || e.key === 'l' || e.key === 'L' || e.key === 'f' || e.key === 'F') { try { window.parent.__vrKey && window.parent.__vrKey(e.key); } catch (x) {} }
   });
   addEventListener('pagehide', function () {
     try { if (srcNode) srcNode.disconnect(); } catch (e) {}

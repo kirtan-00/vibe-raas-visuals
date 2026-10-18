@@ -38,6 +38,14 @@ select{font:inherit;font-size:16px;width:100%;min-height:52px;background:var(--d
 .pill.net{border-color:#7fd08a;color:#a9f0b2}.pill.lan{border-color:var(--gold);color:var(--gold)}.pill.off{border-color:#ff8a6a;color:#ff8a6a}
 .meta{display:flex;flex-direction:column;gap:6px;align-items:flex-end}
 #room{font-size:13px;color:var(--dim);letter-spacing:.12em}
+#ctrls{font-size:13px;color:var(--gold);letter-spacing:.04em}
+#logos{grid-template-columns:repeat(5,1fr)}
+.lchip{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:118px;padding:10px 8px;font-size:16px}
+.lchip span{display:flex;align-items:center;justify-content:center;width:100%;height:64px;border-radius:8px;background:#0e0002}
+.lchip img{max-width:88%;max-height:54px;object-fit:contain;display:block}
+.lchip .off{width:40px;height:40px;border-radius:50%;border:4px solid var(--dim);position:relative}
+.lchip .off::after{content:"";position:absolute;left:50%;top:-4px;bottom:-4px;width:4px;margin-left:-2px;background:var(--dim);transform:rotate(45deg)}
+.lchip.sel span{background:#000}
 #join{display:none;max-width:420px;margin:12vh auto 0;text-align:center}
 #join h1{font-family:"Rozha";font-weight:400;font-size:36px;color:var(--gold);margin-bottom:8px}
 #join p{color:var(--dim);font-size:15px;line-height:1.5;margin-bottom:18px}
@@ -51,6 +59,9 @@ body.nojoin #join{display:block}body.nojoin .wrap{display:none}
  .meta{flex:1}
  .row{grid-template-columns:1fr 1fr}
  #vis{grid-template-columns:1fr 1fr}
+ #logos{grid-template-columns:1fr 1fr}
+ #logos button:last-child{grid-column:1/-1;min-height:84px;flex-direction:row}
+ #logos button:last-child span{width:64px}
  button{min-height:64px}
  #tap{min-height:140px}
 }
@@ -66,9 +77,9 @@ body.nojoin #join{display:block}body.nojoin .wrap{display:none}
  <div class="top">
   <div id="light"></div>
   <h1>Vibe Raas Control</h1>
-  <div class="stat">BPM<b id="bpm">--</b></div>
+  <div class="stat">BPM<b id="bpm">&middot;</b></div>
   <div class="stat">Input<div id="lvl"><i></i></div></div>
-  <div class="meta"><span class="pill off" id="pill">Offline</span><span id="conn">Waiting for show</span><span id="room"></span></div>
+  <div class="meta"><span class="pill off" id="pill">Offline</span><span id="conn">Waiting for show</span><span id="room"></span><span id="ctrls"></span></div>
  </div>
  <section>
   <h2>Visual</h2>
@@ -83,6 +94,16 @@ body.nojoin #join{display:block}body.nojoin .wrap{display:none}
    <button data-p="Raat" class="chip"><i style="background:linear-gradient(135deg,#262c6e 50%,#e5c06a 50%)"></i>Raat</button>
   </div>
  </section>
+ <section>
+  <h2>Centre logo</h2>
+  <div class="row" id="logos">
+   <button class="lchip" data-l="vibe"><span><img src="img/logo_gold.png" alt=""></span>Vibe Raas</button>
+   <button class="lchip" data-l="tribe"><span><img src="img/tribe_gold.svg" alt=""></span>Vibe Tribe</button>
+   <button class="lchip" data-l="sach"><span><img src="img/sach_gold.svg" alt=""></span>Sach Raatri</button>
+   <button class="lchip" data-l="clapper"><span><img src="img/clapper.svg" alt=""></span>Clapper</button>
+   <button class="lchip" data-l="off"><span><i class="off"></i></span>Off</button>
+  </div>
+ </section>
  <div class="two">
   <section>
    <h2>Tap tempo</h2>
@@ -93,7 +114,7 @@ body.nojoin #join{display:block}body.nojoin .wrap{display:none}
    <h2>Intensity <span id="kv">1.0</span></h2>
    <input type="range" id="k" min="0.3" max="1.8" step="0.05" value="1">
    <div class="row" style="margin-top:10px">
-    <button id="logo">Logo off</button><button id="fs">Fullscreen</button>
+    <button id="fs">Fullscreen</button>
    </div>
    <p class="hint">Fullscreen: click the SHOW window once, then press F (or double-click it). Browsers only allow it from that window. Press Q on the show to see the pairing code again.</p>
   </section>
@@ -114,9 +135,13 @@ $('jf').onsubmit = e => { e.preventDefault(); const c = VRRelay.clean($('code').
 if (ROOM.length < 3) { document.body.classList.add('nojoin'); setTimeout(() => $('code').focus(), 50); }
 const relay = ROOM.length >= 3 ? VRRelay({ room: ROOM, role: 'control', onMsg: (m, via) => onStatus(m, via) }) : null;
 const send = m => { if (relay) relay.send(m); };
-if (relay) { $('room').textContent = 'ROOM ' + ROOM; relay.onConn = up => { if (up) send({ type: 'ping' }); pillUpdate(); }; }
+if (relay) { $('room').textContent = 'ROOM ' + ROOM; relay.onConn = up => { if (up) { hello(); send({ type: 'ping' }); } pillUpdate(); }; }
 let lastNet = 0, lastBc = 0, bpmNow = 0, beatAnchor = 0;
-let logoOn = false, lastSeen = 0, curV = '', curPal = '';
+let lastSeen = 0, lastV = '';
+// UI follows the show's status (so every phone stays in sync); a local tap holds its own choice briefly
+const held = { v: 0, p: 0, l: 0 };
+const CID = Math.random().toString(36).slice(2, 10);
+function hello() { send({ type: 'hello', cid: CID }); }
 const VISUALS = [
   { v: 'tunnel', name: 'Tunnel', path: 'tunnel/' }, { v: 'stripes', name: 'Stripes', path: 'stripes/' },
   { v: 'mandala', name: 'Mandala', path: 'stripes/' }, { v: 'ghoomar', name: 'Ghoomar', path: 'ghoomar/' },
@@ -129,13 +154,14 @@ async function buildVis() {
   VISUALS.forEach((x, i) => {
     if (!ok[i]) return;
     const b = document.createElement('button'); b.dataset.v = x.v; b.textContent = x.name;
-    b.onclick = () => { send({ type: 'visual', v: x.v }); mark('#vis', 'v', x.v); };
+    b.onclick = () => { send({ type: 'visual', v: x.v }); mark('#vis', 'v', x.v); held.v = performance.now(); };
     row.appendChild(b);
   });
-  if (curV) mark('#vis', 'v', curV);
+  if (lastV) mark('#vis', 'v', lastV);
 }
 buildVis();
-document.querySelectorAll('#pal button').forEach(b => b.onclick = () => { send({ type: 'pal', name: b.dataset.p }); mark('#pal', 'p', b.dataset.p); });
+document.querySelectorAll('#pal button').forEach(b => b.onclick = () => { send({ type: 'pal', name: b.dataset.p }); mark('#pal', 'p', b.dataset.p); held.p = performance.now(); });
+document.querySelectorAll('#logos button').forEach(b => b.onclick = () => { send({ type: 'clogo', name: b.dataset.l }); mark('#logos', 'l', b.dataset.l); held.l = performance.now(); });
 function mark(sel, attr, val) { document.querySelectorAll(sel + ' button').forEach(b => b.classList.toggle('sel', b.dataset[attr] === val)); }
 $('tap').addEventListener('pointerdown', e => { e.preventDefault(); send({ type: 'tap' }); flash(); });
 addEventListener('keydown', e => { if (e.key === ' ' || e.key === 't' || e.key === 'T') { e.preventDefault(); send({ type: 'tap' }); flash(); } });
@@ -143,7 +169,6 @@ let flashing = false;
 function flash() { flashing = true; $('light').classList.add('on'); setTimeout(() => { flashing = false; $('light').classList.remove('on'); }, 90); }
 let kTouched = 0;
 $('k').oninput = () => { kTouched = performance.now(); $('kv').textContent = (+$('k').value).toFixed(2); send({ type: 'k', value: +$('k').value }); };
-$('logo').onclick = () => { logoOn = !logoOn; send({ type: 'logo', on: logoOn }); $('logo').textContent = logoOn ? 'Logo on' : 'Logo off'; $('logo').classList.toggle('sel', logoOn); };
 $('fs').onclick = () => send({ type: 'fs' });
 $('dev').onchange = () => send({ type: 'input', id: $('dev').value, label: $('dev').selectedOptions[0] ? $('dev').selectedOptions[0].textContent : '' });
 let devKey = '';
@@ -161,13 +186,15 @@ function onStatus(m, via) {
   $('conn').textContent = m.started ? 'Show live' : 'Show open, click it to start';
   bpmNow = m.bpm || 0; if (m.beatAge < 5000) beatAnchor = now - m.beatAge;
   showDevs(m.devs, m.dev);
-  if (typeof m.logo === 'boolean' && m.logo !== logoOn) { logoOn = m.logo; $('logo').textContent = logoOn ? 'Logo on' : 'Logo off'; $('logo').classList.toggle('sel', logoOn); }
   if (m.K && performance.now() - kTouched > 1500) { $('k').value = m.K; $('kv').textContent = (+m.K).toFixed(2); }
-  $('bpm').textContent = m.bpm ? Math.round(m.bpm) : '--';
+  $('bpm').textContent = m.bpm ? Math.round(m.bpm) : '\u00b7';
   $('lvl').firstChild.style.width = Math.round(m.level * 100) + '%';
 
-  if (m.v !== curV) { curV = m.v; mark('#vis', 'v', m.v); }
-  if (m.pal && m.pal !== curPal) { curPal = m.pal; mark('#pal', 'p', m.pal); }
+  const HOLD = 1500;
+  if (m.v) { lastV = m.v; if (now - held.v > HOLD) mark('#vis', 'v', m.v); }
+  if (m.pal && now - held.p > HOLD) mark('#pal', 'p', m.pal);
+  if (typeof m.logo === 'string' && now - held.l > HOLD) mark('#logos', 'l', m.logo);
+  if (typeof m.ctrls === 'number') { const n = Math.max(1, m.ctrls); $('ctrls').textContent = n + (n === 1 ? ' controller connected' : ' controllers connected'); }
   $('note').textContent = (m.audio || '') + '. Mixer line out works best. Changing input reloads the visual.';
 }
 function pillUpdate() {
@@ -178,7 +205,8 @@ function pillUpdate() {
   else if (relay && relay.mqttUp()) { t = 'Online, waiting for show'; c = 'off'; }
   p.textContent = t; p.className = 'pill ' + c;
 }
-setInterval(() => { pillUpdate(); if (performance.now() - lastSeen > 2500) $('conn').textContent = ROOM ? 'Show not found in room ' + ROOM : ''; }, 500);
+setInterval(() => { pillUpdate(); if (performance.now() - lastSeen > 2500) { $('conn').textContent = ROOM ? 'Show not found in room ' + ROOM : ''; $('ctrls').textContent = ''; } }, 500);
+setInterval(hello, 3000);
 // local beat light: phase-locked to the show's last beat + BPM (status arrives at ~4 Hz over the internet)
 (function beat() {
   const now = performance.now(); let on = false;
@@ -186,7 +214,8 @@ setInterval(() => { pillUpdate(); if (performance.now() - lastSeen > 2500) $('co
   if (!flashing) $('light').classList.toggle('on', on);
   requestAnimationFrame(beat);
 })();
-send({ type: 'ping' });
+hello(); send({ type: 'ping' });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { hello(); send({ type: 'ping' }); } });
 </script>
 </body>
 </html>
