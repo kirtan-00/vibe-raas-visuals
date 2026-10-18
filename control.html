@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vibe Raas Control</title>
+<style>
+@font-face{font-family:"Rozha";src:url(fonts/RozhaOne-Regular.ttf)}
+@font-face{font-family:"Poppins";src:url(fonts/Poppins-Medium.ttf);font-weight:500}
+:root{--deep:#1c0104;--bg:#2a0207;--red:#8e0f1c;--gold:#e9c783;--cream:#f6e7c8;--dim:#b9895a}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--deep);color:var(--cream);font-family:"Poppins",system-ui,sans-serif;font-weight:500;min-height:100vh;padding:16px;user-select:none}
+.wrap{max-width:980px;margin:0 auto;display:grid;gap:14px}
+.top{display:flex;align-items:center;gap:16px;flex-wrap:wrap;background:var(--bg);border-bottom:5px solid var(--gold);border-radius:12px;padding:12px 16px}
+.top h1{font-family:"Rozha";font-weight:400;font-size:28px;color:var(--gold);flex:1;min-width:180px}
+#light{width:46px;height:46px;border-radius:50%;background:#3a0309;border:3px solid var(--dim);transition:background .08s}
+#light.on{background:var(--gold);box-shadow:0 0 22px var(--gold)}
+.stat{font-size:14px;color:var(--dim);line-height:1.3}.stat b{display:block;font-size:30px;color:var(--cream);font-weight:500}
+#lvl{width:120px;height:12px;border:2px solid var(--dim);border-radius:6px;overflow:hidden}#lvl i{display:block;height:100%;width:0;background:var(--gold)}
+section{background:var(--bg);border-radius:12px;padding:14px 16px}
+h2{font-family:"Rozha";font-weight:400;font-size:20px;color:var(--gold);margin-bottom:10px}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+button{font:inherit;font-size:18px;color:var(--cream);background:var(--deep);border:3px solid var(--dim);border-radius:12px;min-height:70px;padding:10px;cursor:pointer;touch-action:manipulation}
+button:hover{border-color:var(--gold)}
+button.sel{border-color:var(--gold);background:var(--red);color:#fff}
+.chip{display:flex;align-items:center;gap:10px;justify-content:center}
+.chip i{width:34px;height:34px;border-radius:8px;border:2px solid rgba(255,255,255,.4)}
+#tap{min-height:130px;font-size:30px;font-family:"Rozha";color:var(--gold);width:100%}
+#tap:active{background:var(--red)}
+input[type=range]{width:100%;height:44px;accent-color:#e9c783}
+select{font:inherit;font-size:16px;width:100%;min-height:52px;background:var(--deep);color:var(--cream);border:3px solid var(--dim);border-radius:10px;padding:8px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:640px){.two{grid-template-columns:1fr}}
+.hint{font-size:14px;color:var(--dim);line-height:1.5;margin-top:8px}
+#conn{font-size:13px;letter-spacing:.08em;color:var(--dim)}
+#conn.bad{color:#ff8a6a}
+</style>
+</head>
+<body>
+<div class="wrap">
+ <div class="top">
+  <div id="light"></div>
+  <h1>Vibe Raas Control</h1>
+  <div class="stat">BPM<b id="bpm">--</b></div>
+  <div class="stat">Input<div id="lvl"><i></i></div></div>
+  <div id="conn" class="bad">SHOW WINDOW NOT FOUND</div>
+ </div>
+ <section>
+  <h2>Visual</h2>
+  <div class="row" id="vis">
+   <button data-v="tunnel">Tunnel</button><button data-v="stripes">Stripes</button>
+   <button data-v="mandala">Mandala</button><button data-v="ghoomar">Ghoomar</button>
+  </div>
+ </section>
+ <section>
+  <h2>Colours</h2>
+  <div class="row" id="pal">
+   <button data-p="Kumkum" class="chip"><i style="background:linear-gradient(135deg,#8e0f1c 50%,#e9c783 50%)"></i>Kumkum</button>
+   <button data-p="Haldi" class="chip"><i style="background:linear-gradient(135deg,#c4560c 50%,#f6c33a 50%)"></i>Haldi</button>
+   <button data-p="Mor" class="chip"><i style="background:linear-gradient(135deg,#0d6964 50%,#d9b45a 50%)"></i>Mor</button>
+   <button data-p="Raat" class="chip"><i style="background:linear-gradient(135deg,#262c6e 50%,#e5c06a 50%)"></i>Raat</button>
+  </div>
+ </section>
+ <div class="two">
+  <section>
+   <h2>Tap tempo</h2>
+   <button id="tap">TAP</button>
+   <p class="hint">Tap 4 or more times on the beat. Space bar works too.</p>
+  </section>
+  <section>
+   <h2>Intensity <span id="kv">1.0</span></h2>
+   <input type="range" id="k" min="0.3" max="1.8" step="0.05" value="1">
+   <div class="row" style="margin-top:10px">
+    <button id="logo">Logo off</button><button id="fs">Fullscreen</button>
+   </div>
+   <p class="hint">Fullscreen: click the SHOW window once, then press F (or double-click it). Browsers only allow it from that window.</p>
+  </section>
+ </div>
+ <section>
+  <h2>Audio input</h2>
+  <select id="dev"><option value="">Default input</option></select>
+  <p class="hint" id="note">Mixer line out works best. Changing input reloads the visual.</p>
+ </section>
+</div>
+<script>
+'use strict';
+const ch = new BroadcastChannel('vibe-raas');
+const $ = id => document.getElementById(id);
+const send = m => ch.postMessage(m);
+let logoOn = false, lastSeen = 0, curV = '', curPal = '';
+document.querySelectorAll('#vis button').forEach(b => b.onclick = () => { send({ type: 'visual', v: b.dataset.v }); mark('#vis', 'v', b.dataset.v); });
+document.querySelectorAll('#pal button').forEach(b => b.onclick = () => { send({ type: 'pal', name: b.dataset.p }); mark('#pal', 'p', b.dataset.p); });
+function mark(sel, attr, val) { document.querySelectorAll(sel + ' button').forEach(b => b.classList.toggle('sel', b.dataset[attr] === val)); }
+$('tap').addEventListener('pointerdown', e => { e.preventDefault(); send({ type: 'tap' }); flash(); });
+addEventListener('keydown', e => { if (e.key === ' ' || e.key === 't' || e.key === 'T') { e.preventDefault(); send({ type: 'tap' }); flash(); } });
+function flash() { $('light').classList.add('on'); setTimeout(() => $('light').classList.remove('on'), 90); }
+$('k').oninput = () => { $('kv').textContent = (+$('k').value).toFixed(2); send({ type: 'k', value: +$('k').value }); };
+$('logo').onclick = () => { logoOn = !logoOn; send({ type: 'logo', on: logoOn }); $('logo').textContent = logoOn ? 'Logo on' : 'Logo off'; $('logo').classList.toggle('sel', logoOn); };
+$('fs').onclick = () => send({ type: 'fs' });
+$('dev').onchange = () => send({ type: 'input', id: $('dev').value, label: $('dev').selectedOptions[0] ? $('dev').selectedOptions[0].textContent : '' });
+async function listDevs() {
+  try {
+    let d = await navigator.mediaDevices.enumerateDevices();
+    if (d.some(x => x.kind === 'audioinput' && !x.label)) {
+      try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); s.getTracks().forEach(t => t.stop()); d = await navigator.mediaDevices.enumerateDevices(); } catch (e) {}
+    }
+    const sel = $('dev'), keep = sel.value; sel.innerHTML = '<option value="">Default input</option>';
+    d.filter(x => x.kind === 'audioinput' && x.deviceId !== 'default').forEach((x, i) => { const o = document.createElement('option'); o.value = x.deviceId; o.textContent = x.label || ('Input ' + (i + 1)); sel.appendChild(o); });
+    sel.value = keep;
+  } catch (e) {}
+}
+listDevs(); if (navigator.mediaDevices) navigator.mediaDevices.addEventListener('devicechange', listDevs);
+ch.onmessage = ev => {
+  const m = ev.data; if (!m || m.type !== 'status') return;
+  lastSeen = performance.now();
+  $('conn').textContent = m.started ? 'SHOW LIVE' : 'SHOW OPEN, CLICK IT TO START'; $('conn').classList.toggle('bad', !m.started);
+  $('bpm').textContent = m.bpm ? Math.round(m.bpm) : '--';
+  $('lvl').firstChild.style.width = Math.round(m.level * 100) + '%';
+  $('light').classList.toggle('on', m.beatAge < 140);
+  if (m.v !== curV) { curV = m.v; mark('#vis', 'v', m.v); }
+  if (m.pal && m.pal !== curPal) { curPal = m.pal; mark('#pal', 'p', m.pal); }
+  $('note').textContent = (m.audio || '') + '. Mixer line out works best. Changing input reloads the visual.';
+};
+setInterval(() => { if (performance.now() - lastSeen > 1500) { $('conn').textContent = 'SHOW WINDOW NOT FOUND'; $('conn').classList.add('bad'); } }, 500);
+send({ type: 'ping' });
+</script>
+</body>
+</html>

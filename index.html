@@ -28,6 +28,7 @@ section.how{margin-top:40px;background:var(--bg);border-left:6px solid var(--gol
 .how ol{padding-left:22px;line-height:1.75;font-size:16px}
 .keys{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px 18px;font-size:15px}
 kbd{display:inline-block;min-width:28px;text-align:center;background:var(--deep);border:2px solid var(--dim);border-radius:6px;padding:1px 7px;color:var(--gold);font-family:inherit}
+a.lk{color:var(--gold);font-weight:500}
 footer{text-align:center;padding:28px 16px 40px;font-size:13px;letter-spacing:.14em;color:var(--dim)}
 </style>
 </head>
@@ -38,22 +39,18 @@ footer{text-align:center;padding:28px 16px 40px;font-size:13px;letter-spacing:.1
 </header>
 <main>
  <div class="grid">
-  <a class="card" href="tunnel/"><img src="img/tunnel.jpg" alt=""><div><b class="num">01</b><h2>Bandhani Tunnel</h2><span>Fly into rings of bandhani. Every dhol hit fires a gold ring and a camera punch.</span></div></a>
-  <a class="card" href="stripes/"><img src="img/stripes.jpg" alt=""><div><b class="num">02</b><h2>Bandhani Stripes</h2><span>Bandhani bands scroll and swell on each drum hit. Press 2 for the mandala.</span></div></a>
-  <a class="card" href="ghoomar/"><img src="img/ghoomar.jpg" alt=""><div><b class="num">03</b><h2>Ghoomar Mandala</h2><span>A bandhani mandala that spins with the tempo and flares on every hit.</span></div></a>
+  <a class="card" href="show.html?v=tunnel" target="_blank"><img src="img/tunnel.jpg" alt=""><div><b class="num">01</b><h2>Bandhani Tunnel</h2><span>Fly into rings of bandhani. Every dhol hit fires a gold ring and a camera punch.</span></div></a>
+  <a class="card" href="show.html?v=stripes" target="_blank"><img src="img/stripes.jpg" alt=""><div><b class="num">02</b><h2>Bandhani Stripes</h2><span>Bandhani bands scroll and swell on each drum hit. Mandala is in the control panel.</span></div></a>
+  <a class="card" href="show.html?v=ghoomar" target="_blank"><img src="img/ghoomar.jpg" alt=""><div><b class="num">03</b><h2>Ghoomar Mandala</h2><span>A bandhani mandala that spins with the tempo and flares on every hit.</span></div></a>
  </div>
  <section class="how">
   <h3>For the VJ</h3>
   <ol>
-   <li>Open this page in <b>Chrome</b> on the laptop going to the LED.</li>
-   <li>Pick a visual. Drag the window onto the LED display.</li>
-   <li>Click once and press <b>Allow</b> for the microphone. Use the mixer line out if you can, or the laptop mic.</li>
-   <li>Press <kbd>F</kbd> for fullscreen. It reacts to drum beats only.</li>
+   <li>Open the <a class="lk" href="show.html" target="_blank" onclick="window.open(this.href,'vrshow','popup,width=1280,height=720');return false">SHOW window</a> in <b>Chrome</b>, drag it onto the LED, click once to start and press <b>Allow</b> for the microphone.</li>
+   <li>Press <kbd>F</kbd> (or double-click it) for fullscreen.</li>
+   <li>Open the <a class="lk" href="control.html" target="_blank" onclick="window.open(this.href,'vrcontrol','popup,width=1000,height=820');return false">CONTROL window</a> on your laptop screen. Switch visuals, colours, intensity and tap tempo from there.</li>
   </ol>
-  <div class="keys">
-   <span><kbd>T</kbd> tap tempo</span><span><kbd>P</kbd> colours</span><span><kbd>&uarr;</kbd><kbd>&darr;</kbd> intensity</span>
-   <span><kbd>I</kbd> next audio input</span><span><kbd>H</kbd> beat info</span><span><kbd>L</kbd> logo</span><span><kbd>Esc</kbd> exit fullscreen, then Back for this page</span>
-  </div>
+  <p class="keys">Both windows must be in the same Chrome. Mixer line out works best, or the laptop mic.</p>
  </section>
 </main>
 <footer>SUNDAY, 18 OCTOBER 2026 &bull; TATHASTU PARTY PLOT, OGNAJ</footer>
