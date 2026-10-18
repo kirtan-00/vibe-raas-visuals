@@ -130,7 +130,7 @@ body.nojoin #join{display:block}body.nojoin .wrap{display:none}
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
-const ROOM = VRRelay.clean(new URLSearchParams(location.search).get('room'));
+const ROOM = VRRelay.clean(new URLSearchParams(location.search).get('room')) || 'VIBERAAS';
 $('jf').onsubmit = e => { e.preventDefault(); const c = VRRelay.clean($('code').value); if (c.length >= 3) location.href = 'control.html?room=' + c; };
 if (ROOM.length < 3) { document.body.classList.add('nojoin'); setTimeout(() => $('code').focus(), 50); }
 const relay = ROOM.length >= 3 ? VRRelay({ room: ROOM, role: 'control', onMsg: (m, via) => onStatus(m, via) }) : null;

@@ -52,7 +52,7 @@ const Q = new URLSearchParams(location.search);
 let cur = VIS[Q.get('v')] ? Q.get('v') : 'tunnel';
 const fr = document.getElementById('v'), go = document.getElementById('go');
 let ROOM = VRRelay.clean(Q.get('room'));
-if (ROOM.length < 3) { ROOM = VRRelay.newCode(); }
+if (ROOM.length < 3) { ROOM = 'VIBERAAS'; }
 const relay = VRRelay({ room: ROOM, role: 'show', onMsg: m => onCmd(m) });
 const CTRL = new URL('control.html?room=' + ROOM, location.href).href;
 function pairHTML() {
