@@ -1,0 +1,988 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vibe Raas Visuals</title>
+<style>
+  html,body{margin:0;height:100%;background:#1c0104;overflow:hidden}
+  body.run{cursor:none}
+  canvas{position:fixed;left:0;top:0;width:100vw;height:100vh;display:block}
+  #b{opacity:0}
+  #logo{position:fixed;right:2.4vmin;bottom:2.4vmin;height:9vmin;opacity:0;transition:opacity .8s;pointer-events:none;z-index:5}
+  #logo.on{opacity:.92}
+  #hud{position:fixed;left:12px;top:12px;font:12px/1.55 Menlo,ui-monospace,monospace;color:#f6e7c8;background:rgba(24,3,6,.82);padding:10px 14px;border:1px solid rgba(233,199,131,.45);display:none;z-index:6;white-space:pre}
+  #start{position:fixed;inset:0;z-index:7;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2.2vmin;
+    background:rgba(28,1,4,.72);color:#f6e7c8;font-family:Georgia,'Times New Roman',serif;cursor:pointer;text-align:center}
+  #start h1{margin:0;font-weight:400;font-size:6vmin;letter-spacing:.02em;color:#e9c783}
+  #start p{margin:0;font-size:2.2vmin;opacity:.8;max-width:70vmin;line-height:1.5}
+  #start .k{font-family:Menlo,monospace;font-size:1.6vmin;opacity:.55}
+  #start.gone{display:none}
+</style>
+</head>
+<body>
+<canvas id="a"></canvas>
+<canvas id="b"></canvas>
+<img id="logo" src="assets/logo_gold.png" alt="">
+<div id="hud"></div>
+<div id="start">
+  <h1>Click to begin</h1>
+  <p>Allow the microphone so the visuals follow the dhol. No mic? It keeps its own beat at 128.</p>
+  <p class="k">1 stripes &middot; 2 mandala &middot; A auto &middot; T tap &middot; P palette &middot; F fullscreen &middot; H info</p>
+</div>
+<script>
+'use strict';
+/* ------------------------------------------------------------------ utils */
+const $ = id => document.getElementById(id);
+const Q = new URLSearchParams(location.search);
+const DEMO = Q.get('demo') === '1';
+const CV = [$('a'), $('b')];
+const CX = CV.map(c => c.getContext('2d', { alpha: false }));
+let W = 0, H = 0, U = 1;
+const TAU = Math.PI * 2;
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+function rgba(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`; }
+function mixHex(h1, h2, t) {
+  const a = parseInt(h1.slice(1), 16), b = parseInt(h2.slice(1), 16);
+  const r = Math.round(lerp(a >> 16 & 255, b >> 16 & 255, t)), g = Math.round(lerp(a >> 8 & 255, b >> 8 & 255, t)), bl = Math.round(lerp(a & 255, b & 255, t));
+  return '#' + ((1 << 24) | (r << 16) | (g << 8) | bl).toString(16).slice(1);
+}
+function mk(w, h, fn) { const c = document.createElement('canvas'); c.width = Math.max(1, Math.ceil(w)); c.height = Math.max(1, Math.ceil(h)); fn(c.getContext('2d'), c.width, c.height); return c; }
+function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const easeOut = x => 1 - (1 - x) * (1 - x) * (1 - x);
+const easeIn = x => x * x * x;
+const easeIO = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+
+/* --------------------------------------------------------------- palettes */
+const PALS = [
+  { name: 'Kumkum', deep: '#1c0104', bg: '#3a0309', main: '#8e0f1c', accent: '#c4422a', gold: '#e9c783', cream: '#f6e7c8', green: '#2f6b4a', leaf: '#4c7a2c', leaf2: '#263f14' },
+  { name: 'Haldi',  deep: '#2a0902', bg: '#5c1704', main: '#b8231a', accent: '#f08a12', gold: '#f6b81c', cream: '#fff0c4', green: '#3d7a2a', leaf: '#4f7f24', leaf2: '#2a4612' },
+  { name: 'Mor',    deep: '#021a1d', bg: '#063238', main: '#0d6964', accent: '#1f7a3a', gold: '#d9b45a', cream: '#eef0d6', green: '#7a2a3a', leaf: '#3f8a3a', leaf2: '#1c4a20' },
+  { name: 'Raat',   deep: '#05061a', bg: '#0f1238', main: '#242a6a', accent: '#8e1a2a', gold: '#e5c06a', cream: '#f3e6c4', green: '#2f6b4a', leaf: '#46752c', leaf2: '#223c14' },
+];
+let palIdx = 0;
+const P = () => PALS[palIdx];
+const MARIGOLD = ['#f08a12', '#f6b21c', '#e86a0e'];
+
+/* ------------------------------------------------------------------ beat */
+const ATT = 0.06, DEC = 0.42;
+function envAt(dt) {
+  if (dt < 0) return 0;
+  if (dt < ATT) { const x = dt / ATT; return 1 - (1 - x) * (1 - x); }
+  const d = (dt - ATT) / DEC; if (d >= 1) return 0;
+  const y = 1 - d; return y * y * (3 - 2 * y);
+}
+const B = { bpm: 128, period: 60 / 128, beats: [], count: 0, next: 0, lastOnset: -99, onsets: [], taps: [], src: 'auto' };
+for (let i = 0; i < 4; i++) B.beats.push({ t: -99, n: -i });
+function fireBeat(t) {
+  B.count++;
+  B.beats.unshift({ t, n: B.count }); B.beats.length = 4;
+  onBeat();
+}
+function beatEnv(now, delay) {
+  let e = 0; for (const b of B.beats) { const v = envAt(now - b.t - delay); if (v > e) e = v; } return e;
+}
+function beatSum(now, delay) { let e = 0; for (const b of B.beats) e += envAt(now - b.t - delay); return e; }
+function lastBeatOf(par) { for (const b of B.beats) if ((b.n & 1) === par) return b.t; return -99; }
+function beatPhase(now) { return clamp((now - B.beats[0].t) / B.period, 0, 1.5); }
+function setBpm(bpm) { B.bpm = clamp(bpm, 60, 200); B.period = 60 / B.bpm; }
+
+/* ----------------------------------------------------------------- audio */
+let ac = null, analyser = null, fd = null, micStream = null, srcNode = null, devices = [], devIdx = -1, audioNote = 'none';
+const LV = { low: 0, mid: 0, high: 0, all: 0, pkL: .05, pkM: .05, pkH: .05, pkA: .05, lowN: 0, midN: 0, highN: 0, energy: 0, prevLow: 0, flux: [] };
+function initCtx() {
+  if (ac) return;
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+  analyser = ac.createAnalyser(); analyser.fftSize = 4096; analyser.smoothingTimeConstant = 0.25;
+  analyser.minDecibels = -95; analyser.maxDecibels = -15;
+  fd = new Uint8Array(analyser.frequencyBinCount);
+  const sink = ac.createGain(); sink.gain.value = 0; analyser.connect(sink); sink.connect(ac.destination);
+}
+async function startMic(deviceId) {
+  initCtx(); try { await ac.resume(); } catch (e) {}
+  try {
+    const c = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+    if (deviceId) c.deviceId = { exact: deviceId };
+    const s = await navigator.mediaDevices.getUserMedia({ audio: c });
+    if (srcNode) srcNode.disconnect();
+    if (micStream) micStream.getTracks().forEach(t => t.stop());
+    micStream = s; srcNode = ac.createMediaStreamSource(s); srcNode.connect(analyser);
+    audioNote = 'mic: ' + (s.getAudioTracks()[0].label || 'input');
+    try { devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput'); } catch (e) {}
+  } catch (e) { audioNote = 'no mic (' + e.name + '), auto beat'; }
+}
+async function nextInput() {
+  if (!devices.length) return;
+  devIdx = (devIdx + 1) % devices.length; await startMic(devices[devIdx].deviceId);
+}
+function startDemo() {
+  initCtx(); ac.resume().catch(() => {});
+  audioNote = 'demo track 128 BPM';
+  const out = ac.createGain(); out.gain.value = 0.9; out.connect(analyser);
+  const nb = ac.createBuffer(1, ac.sampleRate * 0.3, ac.sampleRate), nd = nb.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  const per = 60 / 128; let t0 = ac.currentTime + 0.2, k = 0;
+  function kick(t) {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.14);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(1, t + 0.004); g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.35);
+  }
+  function hat(t, lvl) {
+    const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    s.buffer = nb; f.type = 'highpass'; f.frequency.value = 6000;
+    g.gain.setValueAtTime(lvl, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+    s.connect(f); f.connect(g); g.connect(out); s.start(t); s.stop(t + 0.08);
+  }
+  function tone(t) {
+    const o = ac.createOscillator(), g = ac.createGain(); o.type = 'triangle'; o.frequency.value = 440 + 110 * (k % 3);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.01); g.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.3);
+  }
+  setInterval(() => {
+    while (t0 < ac.currentTime + 0.15) { kick(t0); hat(t0 + per / 2, 0.35); hat(t0 + per / 4, 0.12); if (k % 2) tone(t0 + per * 0.75); t0 += per; k++; }
+  }, 25);
+}
+function band(lo, hi) {
+  const hz = ac.sampleRate / analyser.fftSize; const a = Math.max(1, Math.floor(lo / hz)), b = Math.min(fd.length - 1, Math.ceil(hi / hz));
+  let s = 0; for (let i = a; i <= b; i++) { const v = fd[i] / 255; s += v * v; } return s / (b - a + 1);
+}
+function analyse(now, dt) {
+  if (!analyser || ac.state !== 'running' || (!srcNode && !DEMO)) { LV.lowN *= .95; LV.midN *= .95; LV.highN *= .95; LV.energy = lerp(LV.energy, 0.35, dt); return; }
+  analyser.getByteFrequencyData(fd);
+  const low = band(40, 150), mid = band(300, 2000), high = band(4000, 12000), all = (low + mid + high) / 3;
+  LV.pkL = Math.max(low, LV.pkL * 0.9993, 0.004); LV.pkM = Math.max(mid, LV.pkM * 0.9993, 0.002); LV.pkH = Math.max(high, LV.pkH * 0.9993, 0.001); LV.pkA = Math.max(all, LV.pkA * 0.9993, 0.003);
+  LV.lowN = low / LV.pkL; LV.midN = lerp(LV.midN, mid / LV.pkM, .35); LV.highN = lerp(LV.highN, high / LV.pkH, .5);
+  const a = all / LV.pkA; LV.energy = a > LV.energy ? lerp(LV.energy, a, .25) : lerp(LV.energy, a, .03);
+  const flux = Math.max(0, low - LV.prevLow) / LV.pkL; LV.prevLow = low;
+  LV.flux.push(flux); if (LV.flux.length > 45) LV.flux.shift();
+  let m = 0; for (const f of LV.flux) m += f; m /= LV.flux.length;
+  let v = 0; for (const f of LV.flux) v += (f - m) * (f - m); const sd = Math.sqrt(v / LV.flux.length);
+  const thr = m + 1.5 * sd + 0.04;
+  if (flux > thr && LV.lowN > 0.4 && low > 0.002 && now - B.lastOnset > 0.25) onset(now);
+}
+function onset(now) {
+  const ioi = now - B.lastOnset; B.lastOnset = now;
+  if (ioi > 0.25 && ioi < 1.5) {
+    B.onsets.push(ioi); if (B.onsets.length > 10) B.onsets.shift();
+    if (B.onsets.length >= 4) {
+      const f = B.onsets.map(x => { let bpm = 60 / x; while (bpm < 92) bpm *= 2; while (bpm > 184) bpm /= 2; return bpm; }).sort((p, q) => p - q);
+      const med = f[f.length >> 1]; setBpm(lerp(B.bpm, med, .3));
+    }
+  }
+  B.src = 'audio';
+  fireBeat(now); B.next = now + B.period;
+}
+function clock(now) {
+  const live = now - B.lastOnset < 2.2;
+  if (live) return;
+  B.src = B.taps.length >= 2 ? 'tap' : 'auto';
+  if (now >= B.next) { if (now - B.next > B.period) B.next = now; fireBeat(B.next); B.next += B.period; }
+}
+function tap(now) {
+  if (B.taps.length && now - B.taps[B.taps.length - 1] > 2.5) B.taps = [];
+  B.taps.push(now); if (B.taps.length > 6) B.taps.shift();
+  if (B.taps.length >= 2) { const iv = (B.taps[B.taps.length - 1] - B.taps[0]) / (B.taps.length - 1); setBpm(60 / iv); }
+  B.lastOnset = -99; fireBeat(now); B.next = now + B.period;
+}
+
+/* --------------------------------------------------------------- sprites */
+const SP = {};
+function clusterSprite(n, size, col, eye) {
+  return mk(size, size, (g, s) => {
+    const c = s / 2; let pts = [], r;
+    if (n === 9) { const sp = s * 0.25; for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) pts.push([(i - j) * sp * .7071, (i + j) * sp * .7071]); r = s * 0.085; }
+    else if (n === 4) { const sp = s * 0.25; pts = [[0, -sp], [sp, 0], [0, sp], [-sp, 0]]; r = s * 0.12; }
+    else { pts = [[0, 0]]; r = s * 0.3; }
+    for (const [x, y] of pts) {
+      g.fillStyle = col; g.beginPath(); g.arc(c + x, c + y, r, 0, TAU); g.fill();
+      g.fillStyle = eye; g.beginPath(); g.arc(c + x, c + y, r * 0.38, 0, TAU); g.fill();
+    }
+  });
+}
+function glowSprite(col, s = 128) {
+  return mk(s, s, (g) => {
+    const gr = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+    gr.addColorStop(0, rgba(col, 1)); gr.addColorStop(0.25, rgba(col, .55)); gr.addColorStop(0.6, rgba(col, .12)); gr.addColorStop(1, rgba(col, 0));
+    g.fillStyle = gr; g.fillRect(0, 0, s, s);
+  });
+}
+function stickSprite(L, sw, cols, p) {
+  const cw = sw * 2.6, ch = L + sw * 1.2, cx = cw / 2, top = sw * 0.6;
+  return mk(cw, ch, (g) => {
+    const x0 = cx - sw / 2;
+    g.save(); g.beginPath(); g.roundRect(x0, top, sw, L, sw / 2); g.clip();
+    const band = sw * 1.15;
+    for (let k = -3; k * band < L + sw * 3; k++) {
+      g.fillStyle = cols[((k % cols.length) + cols.length) % cols.length];
+      g.beginPath(); const y = top + k * band;
+      g.moveTo(x0, y); g.lineTo(x0 + sw, y - sw * .9); g.lineTo(x0 + sw, y + band - sw * .9); g.lineTo(x0, y + band); g.closePath(); g.fill();
+      g.strokeStyle = rgba(p.deep, .55); g.lineWidth = Math.max(1, sw * .06);
+      g.beginPath(); g.moveTo(x0, y); g.lineTo(x0 + sw, y - sw * .9); g.stroke();
+    }
+    // gold thread wrap at the handle
+    const hy = top + L * 0.86;
+    g.fillStyle = p.gold; g.fillRect(x0, hy, sw, L * 0.14);
+    g.strokeStyle = rgba(p.deep, .45); g.lineWidth = Math.max(1, sw * .05);
+    for (let y = hy; y < top + L; y += sw * .22) { g.beginPath(); g.moveTo(x0, y); g.lineTo(x0 + sw, y + sw * .1); g.stroke(); }
+    const sh = g.createLinearGradient(x0, 0, x0 + sw, 0);
+    sh.addColorStop(0, 'rgba(0,0,0,.42)'); sh.addColorStop(.35, 'rgba(255,240,210,.22)'); sh.addColorStop(.6, 'rgba(0,0,0,0)'); sh.addColorStop(1, 'rgba(0,0,0,.45)');
+    g.fillStyle = sh; g.fillRect(x0, top, sw, L);
+    g.restore();
+    // mirror studs
+    for (const f of [0.22, 0.45, 0.68]) {
+      const y = top + L * f; g.fillStyle = p.gold; g.beginPath(); g.arc(cx, y, sw * .34, 0, TAU); g.fill();
+      g.fillStyle = p.cream; g.beginPath(); g.arc(cx, y, sw * .2, 0, TAU); g.fill();
+    }
+    // end caps
+    g.fillStyle = p.gold; g.beginPath(); g.ellipse(cx, top + sw * .15, sw * .62, sw * .42, 0, 0, TAU); g.fill();
+    g.fillStyle = rgba(p.cream, .8); g.beginPath(); g.ellipse(cx - sw * .15, top + sw * .02, sw * .2, sw * .13, 0, 0, TAU); g.fill();
+    g.fillStyle = p.gold; g.beginPath(); g.ellipse(cx, top + L - sw * .1, sw * .6, sw * .32, 0, 0, TAU); g.fill();
+  });
+}
+function tasselSprite(len, p) {
+  const w = len * 0.7, h = len;
+  return mk(w, h, (g) => {
+    const c = w / 2, kr = len * 0.07; const cols = [p.main, p.gold, p.accent, p.cream, p.green];
+    g.lineCap = 'round';
+    for (let i = 0; i < 17; i++) {
+      const f = i / 16 - .5; g.strokeStyle = cols[i % cols.length]; g.lineWidth = Math.max(1.2, len * .022);
+      g.beginPath(); g.moveTo(c + f * kr, kr * 1.6); g.quadraticCurveTo(c + f * w * .25, h * .5, c + f * w * .62, h * .9); g.stroke();
+      g.fillStyle = p.gold; g.beginPath(); g.arc(c + f * w * .62, h * .9, len * .02, 0, TAU); g.fill();
+    }
+    g.fillStyle = p.accent; g.beginPath(); g.ellipse(c, kr * 1.7, kr * 1.1, kr * .7, 0, 0, TAU); g.fill();
+    g.fillStyle = p.gold; g.beginPath(); g.arc(c, kr, kr, 0, TAU); g.fill();
+    g.strokeStyle = p.deep; g.lineWidth = 1; g.stroke();
+  });
+}
+function petal(g, r0, r1, wid, a) {
+  const ca = Math.cos(a), sa = Math.sin(a), px = -sa, py = ca;
+  const bx = ca * r0, by = sa * r0, tx = ca * r1, ty = sa * r1, mx = ca * (r0 + (r1 - r0) * .45), my = sa * (r0 + (r1 - r0) * .45);
+  g.beginPath(); g.moveTo(bx, by);
+  g.quadraticCurveTo(mx + px * wid, my + py * wid, tx, ty);
+  g.quadraticCurveTo(mx - px * wid, my - py * wid, bx, by); g.closePath();
+}
+function lotusSprite(R, p) {
+  return mk(R * 2, R * 2, (g) => {
+    g.translate(R, R);
+    const layers = [[16, R * .32, R * .98, R * .2, p.main, 0], [16, R * .3, R * .8, R * .17, p.accent, Math.PI / 16], [8, R * .22, R * .6, R * .2, p.cream, 0], [8, R * .15, R * .42, R * .13, p.gold, Math.PI / 8]];
+    for (const [n, r0, r1, wd, col, off] of layers) {
+      for (let i = 0; i < n; i++) {
+        petal(g, r0, r1, wd, off + i / n * TAU); g.fillStyle = col; g.fill();
+        g.strokeStyle = p.gold; g.lineWidth = Math.max(1, R * .012); g.stroke();
+        if (col !== p.cream && col !== p.gold) { petal(g, r0 + (r1 - r0) * .25, r1 - (r1 - r0) * .2, wd * .35, off + i / n * TAU); g.strokeStyle = rgba(p.gold, .7); g.stroke(); }
+      }
+    }
+    g.fillStyle = p.deep; g.beginPath(); g.arc(0, 0, R * .17, 0, TAU); g.fill();
+    g.fillStyle = p.gold; g.beginPath(); g.arc(0, 0, R * .13, 0, TAU); g.fill();
+    for (let i = 0; i < 12; i++) { const a = i / 12 * TAU; g.fillStyle = p.cream; g.beginPath(); g.arc(Math.cos(a) * R * .085, Math.sin(a) * R * .085, R * .018, 0, TAU); g.fill(); }
+    g.fillStyle = p.main; g.beginPath(); g.arc(0, 0, R * .04, 0, TAU); g.fill();
+  });
+}
+function marigoldSprite(r, col, seed) {
+  const R = rng(seed);
+  return mk(r * 2.2, r * 2.2, (g, s) => {
+    const c = s / 2; const dark = mixHex(col, '#5a1a00', .45), lite = mixHex(col, '#fff2b0', .35);
+    g.fillStyle = dark; g.beginPath(); g.arc(c, c, r, 0, TAU); g.fill();
+    for (let ring = 0; ring < 4; ring++) {
+      const rr = r * (0.92 - ring * 0.22), n = 14 - ring * 3;
+      for (let i = 0; i < n; i++) {
+        const a = i / n * TAU + R() * .4 + ring; const x = c + Math.cos(a) * rr * .55, y = c + Math.sin(a) * rr * .55;
+        g.fillStyle = ring % 2 ? col : (R() < .5 ? lite : col);
+        g.beginPath(); g.ellipse(x, y, rr * .48, rr * .3, a, 0, TAU); g.fill();
+        g.strokeStyle = rgba(dark, .6); g.lineWidth = Math.max(.8, r * .04); g.stroke();
+      }
+    }
+    g.fillStyle = mixHex(col, '#7a2a00', .5); g.beginPath(); g.arc(c, c, r * .16, 0, TAU); g.fill();
+  });
+}
+function leafSprite(len, p) {
+  const w = len * .34;
+  return mk(w, len, (g) => {
+    const c = w / 2;
+    g.beginPath(); g.moveTo(c, 0); g.bezierCurveTo(c + w * .62, len * .25, c + w * .4, len * .7, c, len);
+    g.bezierCurveTo(c - w * .4, len * .7, c - w * .62, len * .25, c, 0); g.closePath();
+    const gr = g.createLinearGradient(0, 0, w, 0); gr.addColorStop(0, p.leaf2); gr.addColorStop(.5, p.leaf); gr.addColorStop(1, p.leaf2);
+    g.fillStyle = gr; g.fill();
+    g.strokeStyle = rgba('#d8e8a0', .55); g.lineWidth = Math.max(1, len * .015);
+    g.beginPath(); g.moveTo(c, len * .04); g.lineTo(c, len * .95); g.stroke();
+    g.lineWidth = Math.max(.8, len * .008);
+    for (let i = 1; i < 7; i++) { const y = len * i / 8; g.beginPath(); g.moveTo(c, y); g.lineTo(c + w * .3, y + len * .06); g.moveTo(c, y); g.lineTo(c - w * .3, y + len * .06); g.stroke(); }
+  });
+}
+function mirrorSprite(r, bright, p, tint) {
+  const s = r * 2.6;
+  return mk(s, s, (g) => {
+    const c = s / 2;
+    if (bright) {
+      const gr = g.createRadialGradient(c - r * .3, c - r * .3, 0, c, c, r);
+      gr.addColorStop(0, '#fff6dc'); gr.addColorStop(.35, tint); gr.addColorStop(1, mixHex(tint, p.deep, .35));
+      g.fillStyle = gr; g.beginPath(); g.arc(c, c, r, 0, TAU); g.fill();
+    } else {
+      const gr = g.createRadialGradient(c - r * .3, c - r * .3, 0, c, c, r);
+      gr.addColorStop(0, '#77706a'); gr.addColorStop(.6, '#3a3634'); gr.addColorStop(1, '#1d1a19');
+      g.fillStyle = gr; g.beginPath(); g.arc(c, c, r, 0, TAU); g.fill();
+      g.strokeStyle = 'rgba(255,255,255,.25)'; g.lineWidth = Math.max(1, r * .08);
+      g.beginPath(); g.arc(c, c, r * .7, Math.PI * 1.1, Math.PI * 1.45); g.stroke();
+    }
+  });
+}
+function raySprite(col) {
+  return mk(256, 40, (g) => {
+    const gr = g.createLinearGradient(0, 0, 256, 0); gr.addColorStop(0, rgba(col, .95)); gr.addColorStop(.3, rgba(col, .4)); gr.addColorStop(1, rgba(col, 0));
+    g.fillStyle = gr; g.beginPath(); g.moveTo(0, 18); g.lineTo(256, 0); g.lineTo(256, 40); g.lineTo(0, 22); g.closePath(); g.fill();
+  });
+}
+function buildShared() {
+  const p = P();
+  SP.glowGold = glowSprite(p.gold); SP.glowCream = glowSprite(p.cream); SP.glowAccent = glowSprite(p.accent); SP.glowFire = glowSprite('#f2a23a');
+  SP.ray = raySprite(p.cream);
+}
+
+/* ---------------------------------------------------------------- layout */
+function cells() {
+  const asp = W / H; const n = asp > 2.2 ? Math.max(2, Math.round(asp / 1.38)) : 1; const cw = W / n; const out = [];
+  for (let i = 0; i < n; i++) out.push({ x: i * cw, y: 0, w: cw, h: H, cx: i * cw + cw / 2, cy: H / 2, flip: i % 2 ? -1 : 1, i });
+  return out;
+}
+function bandhaniField(g, w, h, gap, p, alpha) {
+  const c9 = clusterSprite(9, gap * .62, rgba(p.cream, alpha), rgba(p.bg, alpha)), c4 = clusterSprite(4, gap * .5, rgba(p.gold, alpha), rgba(p.bg, alpha));
+  let row = 0;
+  for (let y = gap * .5; y < h + gap; y += gap * .8, row++) for (let x = (row % 2) * gap * .5; x < w + gap; x += gap) {
+    const s = (row + Math.round(x / gap)) % 3 === 0 ? c9 : c4; g.drawImage(s, x - s.width / 2, y - s.height / 2);
+  }
+}
+
+/* ================================================================ SCENES */
+/* 1b. Bandhani Stripes: bands of bandhani dots that scroll, bounce and swell with the music */
+const Stripes = {
+  name: 'Bandhani Stripes', t: 0,
+  build() {
+    const p = P(); const nb = W / H > 2.5 ? 5 : 7; this.nb = nb; const bh = H / nb; this.bh = bh;
+    const fills = [p.main, p.bg, p.accent, p.bg]; const dots = [p.gold, p.cream, p.cream, p.gold]; const eyes = [p.deep, p.main, p.main, p.deep];
+    this.bands = [];
+    for (let i = 0; i < nb; i++) {
+      const cs = Math.ceil(bh * (i % 2 ? 0.46 : 0.6)), gap = cs * 1.25, tileW = Math.ceil(gap * Math.ceil(W / gap + 2));
+      const spr = clusterSprite(i % 2 ? 4 : 9, cs, dots[i % 4], eyes[i % 4]);
+      const strip = mk(tileW + gap * 2, bh, (g, w, h) => {
+        g.fillStyle = fills[i % 4]; g.fillRect(0, 0, w, h);
+        g.fillStyle = p.gold; g.fillRect(0, 0, w, Math.max(3, 4 * U)); g.fillRect(0, h - Math.max(3, 4 * U), w, Math.max(3, 4 * U));
+        for (let x = gap / 2, k = 0; x < w; x += gap, k++) g.drawImage(spr, x - cs / 2, (h - cs) / 2 + (k % 2 ? cs * 0.08 : -cs * 0.08));
+        // small bead line between clusters
+        g.fillStyle = dots[(i + 1) % 4];
+        for (let x = 0; x < w; x += gap / 3) { g.beginPath(); g.arc(x, h * 0.16, Math.max(2, 2.6 * U), 0, TAU); g.fill(); g.beginPath(); g.arc(x, h * 0.84, Math.max(2, 2.6 * U), 0, TAU); g.fill(); }
+      });
+      this.bands.push({ strip, gap, cs });
+    }
+  },
+  draw(g, now, dt) {
+    const p = P(), K = S.K, nb = this.nb, bh = this.bh, mid = (nb - 1) / 2;
+    g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+    g.fillStyle = p.deep; g.fillRect(0, 0, W, H);
+    // scroll speed follows the music: idle drift, energy pushes it, each kick shoves it forward
+    this.t += (90 + 900 * beatEnv(now, 0) * K) * U * dt;   // drum hits only
+    const t0 = B.beats.length ? B.beats[0].t : -9;
+    // draw outer bands first so the centre band sits on top when they swell
+    const order = [...Array(nb).keys()].sort((a, b) => Math.abs(b - mid) - Math.abs(a - mid));
+    for (const i of order) {
+      const b = this.bands[i], dir = i % 2 ? 1 : -1;
+      const e = envAt(now - t0 - Math.abs(i - mid) * 0.06) * K;            // beat wave travels out from the middle band
+      const sy = 1 + 0.26 * e;                                               // band height bounces on each drum hit
+      const h = bh * sy, y = bh * (i + 0.5) - h / 2;
+      const off = ((this.t * (0.7 + 0.15 * (i % 3)) * dir) % b.gap + b.gap) % b.gap;
+      g.drawImage(b.strip, -b.gap - off, y, b.strip.width, h);
+      if (e > 0.02) { g.globalCompositeOperation = 'lighter'; g.globalAlpha = 0.16 * e; g.fillStyle = p.gold; g.fillRect(0, y, W, h); g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1; }
+    }
+  }
+};
+
+/* 1. Dandiya ------------------------------------------------------------ */
+const Dandiya = {
+  name: 'Dandiya', sparks: [], pend: [], seen: 0,
+  build() {
+    const p = P(); const rows = H > W * 0.45 ? 2 : 1; const rowH = H / rows;
+    const L = rowH * (rows === 2 ? 0.58 : 0.56); const sp = L * 1.18; const cols = Math.max(2, Math.floor(W / sp));
+    this.L = L; this.d = L * 0.3; this.ac = Math.asin(0.3); this.rest = -0.26; this.pairs = [];
+    for (let r = 0; r < rows; r++) {
+      const n = r % 2 ? cols - 1 : cols, off = (W - cols * sp) / 2 + sp / 2 + (r % 2 ? sp / 2 : 0);
+      for (let c = 0; c < n; c++) this.pairs.push({ cx: off + c * sp, by: r * rowH + rowH * 0.8, par: (c + r) & 1, ph: c * 1.7 + r });
+    }
+    if (rows === 2 && cols - 1 < 1) this.pairs = this.pairs.filter(q => q.by < rowH);
+    const sw = L * 0.058; this.sw = sw;
+    this.stA = stickSprite(L, sw, [p.main, p.gold, p.green, p.cream], p);
+    this.stB = stickSprite(L, sw, [p.gold, p.accent, p.cream, p.main], p);
+    this.tas = tasselSprite(L * 0.24, p);
+    this.bgL = mk(W, H, (g) => {
+      const gr = g.createLinearGradient(0, 0, 0, H); gr.addColorStop(0, p.deep); gr.addColorStop(.55, p.bg); gr.addColorStop(1, mixHex(p.bg, p.main, .45));
+      g.fillStyle = gr; g.fillRect(0, 0, W, H);
+      bandhaniField(g, W, H, 46 * U, p, .16);
+      const v = g.createRadialGradient(W / 2, H * .55, 0, W / 2, H * .55, Math.max(W, H) * .7);
+      v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,.45)'); g.fillStyle = v; g.fillRect(0, 0, W, H);
+    });
+  },
+  draw(g, now, dt) {
+    const K = S.K;
+    g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+    g.drawImage(this.bgL, 0, 0);
+    if (B.count !== this.seen) { this.seen = B.count; this.pend.push({ t: B.beats[0].t + 0.05, par: B.count & 1 }); }
+    const L = this.L, d = this.d, sw = this.sw, st = this.stA, cw = st.width, chh = L + sw * 0.6;
+    const tipY = Math.cos(this.ac) * L;
+    for (const q of this.pairs) {
+      const e = Math.pow(envAt(now - lastBeatOf(q.par)), 0.8) * Math.min(1, K);
+      const sway = 0.035 * Math.sin(now * 1.7 + q.ph) * (0.5 + LV.energy);
+      const th = lerp(this.rest, this.ac, e) + sway * (1 - e);
+      // floor glow
+      g.globalCompositeOperation = 'lighter';
+      g.globalAlpha = 0.18 + 0.35 * e; const gs = L * 0.9;
+      g.drawImage(SP.glowGold, q.cx - gs, q.by - gs * .25, gs * 2, gs * .5);
+      g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+      // tassels (hang under the hands)
+      for (const s of [-1, 1]) {
+        const a = -s * th * 0.35 + sway * .5, ca = Math.cos(a), sa = Math.sin(a);
+        g.setTransform(ca, sa, -sa, ca, q.cx + s * d, q.by); g.drawImage(this.tas, -this.tas.width / 2, -sw * 0.2);
+      }
+      // sticks
+      const tl = th, tr = -th;
+      let c = Math.cos(tl), s = Math.sin(tl); g.setTransform(c, s, -s, c, q.cx - d, q.by); g.drawImage(this.stA, -cw / 2, -chh);
+      c = Math.cos(tr); s = Math.sin(tr); g.setTransform(c, s, -s, c, q.cx + d, q.by); g.drawImage(this.stB, -cw / 2, -chh);
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      if (e > 0.6) { g.globalCompositeOperation = 'lighter'; g.globalAlpha = (e - .6) * 1.6; const fs = L * .28 * e; g.drawImage(SP.glowGold, q.cx - fs, q.by - tipY - fs, fs * 2, fs * 2); g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1; }
+    }
+    // spawn sparks
+    while (this.pend.length && this.pend[0].t <= now) {
+      const ev = this.pend.shift(); const R = Math.random;
+      for (const q of this.pairs) if (q.par === ev.par) {
+        const n = Math.round(16 * K);
+        for (let i = 0; i < n && this.sparks.length < 700; i++) {
+          const a = -Math.PI / 2 + (R() - .5) * 2.6, v = (180 + R() * 520) * U * (0.7 + .3 * K);
+          this.sparks.push({ x: q.cx, y: q.by - tipY, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0, max: .45 + R() * .45, s: (6 + R() * 10) * U });
+        }
+      }
+    }
+    g.globalCompositeOperation = 'lighter';
+    const out = [];
+    for (const p of this.sparks) {
+      p.life += dt; if (p.life > p.max) continue;
+      p.vy += 900 * U * dt; p.vx *= 1 - 2 * dt; p.vy *= 1 - 1.2 * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+      const k = 1 - p.life / p.max; g.globalAlpha = k; const s = p.s * (0.6 + k);
+      g.drawImage(SP.glowGold, p.x - s, p.y - s, s * 2, s * 2);
+      g.drawImage(SP.glowCream, p.x - s * .3, p.y - s * .3, s * .6, s * .6);
+      out.push(p);
+    }
+    this.sparks = out; g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+  }
+};
+
+/* 2. Ghoomar mandala ---------------------------------------------------- */
+const Mandala = {
+  name: 'Ghoomar', spin: 0,
+  build() {
+    const p = P(); this.cells = cells();
+    const c0 = this.cells[0]; const R = Math.min(c0.w, c0.h) * 0.47; this.R = R;
+    this.lotus = lotusSprite(R * 0.3, p);
+    const cs = R * 0.085; const cols = [p.gold, p.cream, p.accent];
+    this.spr = [];
+    for (let i = 0; i < 7; i++) {
+      const sz = Math.ceil(cs * (i < 2 ? .8 : 1) * 1.3);
+      this.spr.push(clusterSprite(i % 2 ? 4 : 9, sz, cols[i % 3], rgba(p.deep, .9)));
+    }
+    this.bgL = mk(W, H, (g) => {
+      g.fillStyle = p.deep; g.fillRect(0, 0, W, H);
+      bandhaniField(g, W, H, 40 * U, p, .1);
+      for (const c of this.cells) {
+        const gr = g.createRadialGradient(c.cx, c.cy, 0, c.cx, c.cy, R * 1.15);
+        gr.addColorStop(0, rgba(p.main, .95)); gr.addColorStop(.6, rgba(p.bg, .9)); gr.addColorStop(1, rgba(p.deep, 0));
+        g.fillStyle = gr; g.beginPath(); g.arc(c.cx, c.cy, R * 1.15, 0, TAU); g.fill();
+      }
+    });
+  },
+  draw(g, now, dt) {
+    const p = P(), K = S.K, R = this.R;
+    g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+    g.drawImage(this.bgL, 0, 0);
+    this.spin += (0.25 + 1.4 * beatEnv(now, 0)) * dt * (0.6 + .4 * K);   // drum hits only
+    for (const c of this.cells) {
+      const dir = c.flip;
+      // outer chaniya hem: scallops
+      const e0 = beatEnv(now, .3) * K, hemR = R * (0.985 + 0.03 * e0), nS = 40, a0 = this.spin * 0.5 * dir;
+      g.beginPath();
+      for (let i = 0; i < nS; i++) { const a = a0 + i / nS * TAU, a2 = a0 + (i + 1) / nS * TAU, am = (a + a2) / 2; const rr = hemR * 1.02;
+        if (i === 0) g.moveTo(c.cx + Math.cos(a) * hemR, c.cy + Math.sin(a) * hemR);
+        g.quadraticCurveTo(c.cx + Math.cos(am) * rr * 1.04, c.cy + Math.sin(am) * rr * 1.04, c.cx + Math.cos(a2) * hemR, c.cy + Math.sin(a2) * hemR); }
+      g.strokeStyle = rgba(p.gold, .75); g.lineWidth = 3 * U; g.stroke();
+      for (let i = 0; i < nS; i++) { const a = a0 + (i + .5) / nS * TAU; g.fillStyle = p.gold; g.beginPath(); g.arc(c.cx + Math.cos(a) * hemR * 1.0, c.cy + Math.sin(a) * hemR * 1.0, 4 * U, 0, TAU); g.fill(); }
+      // rings
+      for (let i = 6; i >= 0; i--) {
+        const e = envAt(now - B.beats[0].t - i * 0.035) * K;
+        const r = R * (0.3 + i * 0.1) * (1 + 0.07 * e);
+        const spr = this.spr[i], sz = spr.width * (1 + 0.3 * e);
+        const n = Math.floor(TAU * r / (spr.width * 1.18));
+        const ang = this.spin * dir * (i % 2 ? -1 : 1) * (0.5 + 0.1 * i);
+        g.globalAlpha = 0.75 + 0.25 * e;
+        for (let k = 0; k < n; k++) {
+          const a = ang + k / n * TAU, ca = Math.cos(a), sa = Math.sin(a);
+          g.setTransform(ca, sa, -sa, ca, c.cx + ca * r, c.cy + sa * r);
+          g.drawImage(spr, -sz / 2, -sz / 2, sz, sz);
+        }
+        g.setTransform(1, 0, 0, 1, 0, 0);
+        g.globalAlpha = .28 + .3 * e; g.strokeStyle = p.gold; g.lineWidth = 1.5 * U;
+        g.beginPath(); g.arc(c.cx, c.cy, r + spr.width * .62, 0, TAU); g.stroke();
+      }
+      g.globalAlpha = 1;
+      // lotus
+      const el = beatEnv(now, 0) * K, ls = this.lotus.width * (1 + 0.08 * el), la = -this.spin * 0.3 * dir;
+      g.globalCompositeOperation = 'lighter'; g.globalAlpha = .25 + .35 * el;
+      g.drawImage(SP.glowGold, c.cx - ls * .8, c.cy - ls * .8, ls * 1.6, ls * 1.6);
+      g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+      g.setTransform(Math.cos(la), Math.sin(la), -Math.sin(la), Math.cos(la), c.cx, c.cy);
+      g.drawImage(this.lotus, -ls / 2, -ls / 2, ls, ls);
+      g.setTransform(1, 0, 0, 1, 0, 0);
+    }
+  }
+};
+
+/* 3. Garbi light -------------------------------------------------------- */
+const Garbi = {
+  name: 'Garbi',
+  build() {
+    const p = P(); this.cells = cells(); const c0 = this.cells[0];
+    const ph = Math.min(c0.h * 0.62, c0.w * 0.62); this.ph = ph; const rb = ph * 0.37; this.rb = rb; const yb = -ph * 0.4; this.yb = yb;
+    const R = rng(7); this.holes = [];
+    for (let j = -3; j <= 3; j++) {
+      const dy = j * rb * 0.2, hw = Math.sqrt(Math.max(0, rb * rb - dy * dy)) * 0.8, n = Math.max(2, Math.round(hw * 2 / (rb * (j % 2 ? .17 : .13))));
+      for (let i = 0; i < n; i++) {
+        const x = -hw + (i + .5) / n * hw * 2, y = yb + dy, m = Math.min(1, Math.hypot(x, dy) / rb);
+        let dx = x / rb * 1.5, ddy = dy / rb - 0.12; const l = Math.hypot(dx, ddy) || 1;
+        this.holes.push({ x, y, tri: j % 2 !== 0, m, dx: dx / l, dy: ddy / l, far: 0.55 + R() * 0.6, r: rb * (j % 2 ? 0.03 : 0.04) });
+      }
+    }
+    // neck holes
+    for (let i = 0; i < 6; i++) { const x = (i - 2.5) * rb * .1, y = -ph * .8; this.holes.push({ x, y, tri: false, m: .6, dx: (i - 2.5) / 3, dy: -1, far: .5 + R() * .4, r: rb * .022 }); }
+    for (const h of this.holes) { const l = Math.hypot(h.dx, h.dy); h.dx /= l; h.dy /= l; }
+    this.pot = mk(rb * 2.6, ph * 1.02, (g, w, hh) => {
+      g.translate(w / 2, hh - ph * 0.01);
+      const neck = rb * .36, rim = rb * .52, lw = Math.max(2, ph * .007);
+      const shape = () => {
+        g.beginPath(); g.arc(0, yb, rb, 0, TAU);
+        g.moveTo(-neck, yb - rb * .8); g.lineTo(-neck * .92, -ph * .86); g.lineTo(neck * .92, -ph * .86); g.lineTo(neck, yb - rb * .8); g.closePath();
+        g.moveTo(-rim, -ph * .86); g.lineTo(rim, -ph * .86); g.lineTo(rim * .9, -ph * .915); g.lineTo(-rim * .9, -ph * .915); g.closePath();
+        g.moveTo(-rb * .5, yb + rb * .8); g.lineTo(rb * .5, yb + rb * .8); g.lineTo(rb * .42, 0); g.lineTo(-rb * .42, 0); g.closePath();
+      };
+      shape(); g.strokeStyle = p.gold; g.lineWidth = lw * 2; g.lineJoin = 'round'; g.stroke();
+      const gr = g.createRadialGradient(-rb * .3, yb - rb * .35, rb * .1, 0, yb, rb * 1.1);
+      gr.addColorStop(0, mixHex(p.main, p.gold, .12)); gr.addColorStop(.55, mixHex(p.main, p.deep, .5)); gr.addColorStop(1, mixHex(p.deep, '#000000', .35));
+      shape(); g.fillStyle = gr; g.fill('nonzero');
+      g.beginPath(); g.arc(0, yb, rb, 0, TAU);
+      g.save(); g.clip();
+      g.strokeStyle = rgba(p.gold, .8); g.lineWidth = Math.max(1.5, ph * .004);
+      for (const yy of [yb - rb * .78, yb + rb * .8]) { g.beginPath(); g.ellipse(0, yy, rb * 1.3, rb * .09, 0, 0, Math.PI); g.stroke(); }
+      for (let i = 0; i < 26; i++) { const x = -rb * .8 + i / 25 * rb * 1.6; g.fillStyle = rgba(p.gold, .7); g.beginPath(); g.arc(x, yb + rb * .7, ph * .006, 0, TAU); g.fill(); }
+      g.restore();
+      for (const h of this.holes) {
+        g.fillStyle = '#1a0a04';
+        if (h.tri) { g.beginPath(); g.moveTo(h.x, h.y - h.r * 1.6); g.lineTo(h.x + h.r * 1.4, h.y + h.r); g.lineTo(h.x - h.r * 1.4, h.y + h.r); g.closePath(); g.fill(); }
+        else { g.beginPath(); g.arc(h.x, h.y, h.r, 0, TAU); g.fill(); }
+      }
+    });
+    this.potOff = { x: this.pot.width / 2, y: this.pot.height - ph * .01 };
+    // all rays of one pot baked into a layer, scaled about the lamp each frame
+    const D = Math.max(c0.w, c0.h) * 0.62 * 1.15; this.rayD = D;
+    this.rays = mk(D, D, (g) => {
+      g.globalCompositeOperation = 'lighter'; g.scale(.5, .5); const base = g.getTransform();
+      for (const h of this.holes) {
+        if (h.m <= .25) continue;
+        const len = D * h.m, a = Math.atan2(h.dy, h.dx), ca = Math.cos(a), sa = Math.sin(a);
+        g.globalAlpha = 0.4 * h.m;
+        g.setTransform(base); g.transform(ca * len / 256, sa * len / 256, -sa * h.r * 3 / 20, ca * h.r * 3 / 20, D + h.x, D + h.y - yb);
+        g.drawImage(SP.ray, 0, -20);
+      }
+    });
+    this.bgL = mk(W, H, (g) => {
+      const gr = g.createLinearGradient(0, 0, 0, H); gr.addColorStop(0, p.deep); gr.addColorStop(1, p.bg);
+      g.fillStyle = gr; g.fillRect(0, 0, W, H);
+      bandhaniField(g, W, H, 52 * U, p, .07);
+    });
+  },
+  draw(g, now, dt) {
+    const p = P(), K = S.K, ph = this.ph;
+    g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+    g.drawImage(this.bgL, 0, 0);
+    const e = beatEnv(now, 0) * K, en = LV.energy, hi = LV.highN;
+    for (const c of this.cells) {
+      const ox = c.cx, oy = c.y + c.h * 0.86;
+      const D = Math.max(c.w, c.h) * 0.62;
+      g.globalCompositeOperation = 'lighter';
+      // floor pool
+      g.globalAlpha = .25 + .3 * e; g.drawImage(SP.glowFire, ox - ph * .8, oy - ph * .1, ph * 1.6, ph * .22);
+      // rays + thrown dots
+      const rk = (0.35 + 0.35 * en + 0.45 * e) / 1.15, rd = this.rayD * rk;
+      g.globalAlpha = clamp((0.1 + 0.3 * e) / 0.4, 0, 1);
+      g.drawImage(this.rays, ox - rd, oy + this.yb - rd, rd * 2, rd * 2);
+      for (const h of this.holes) {
+        const hx = ox + h.x, hy = oy + h.y;
+        const fx = hx + h.dx * D * h.far * (0.4 + h.m), fy = hy + h.dy * D * h.far * (0.4 + h.m) * .8;
+        const ds = (8 + 10 * h.m) * U * (1 + 1.6 * e);
+        g.globalAlpha = 0.35 + 0.5 * e; g.drawImage(SP.glowGold, fx - ds, fy - ds, ds * 2, ds * 2);
+        g.globalAlpha = 0.5 + 0.5 * e; g.drawImage(SP.glowCream, fx - ds * .3, fy - ds * .3, ds * .6, ds * .6);
+      }
+      // inner glow behind pot
+      g.globalAlpha = .35 + .35 * e; const gg = this.rb * 2.6; g.drawImage(SP.glowFire, ox - gg / 2, oy + this.yb - gg / 2, gg, gg);
+      g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+      g.drawImage(this.pot, ox - this.potOff.x, oy - this.potOff.y);
+      // holes alight
+      g.globalCompositeOperation = 'lighter';
+      for (const h of this.holes) {
+        const hs = h.r * (1.9 + 1.6 * e); g.globalAlpha = .5 + .5 * e;
+        g.drawImage(SP.glowCream, ox + h.x - hs, oy + h.y - hs, hs * 2, hs * 2);
+      }
+      // diya flame on the mouth
+      const fy = oy - ph * 0.93, flick = 0.5 + 0.25 * Math.sin(now * 19 + c.i) + 0.25 * Math.sin(now * 31.7 + c.i * 2);
+      const fh = ph * 0.15 * (0.85 + 0.45 * hi * flick + 0.15 * e), fw = fh * 0.32, sx = Math.sin(now * 7 + c.i) * fw * .25 * (0.4 + hi);
+      g.globalAlpha = .55 + .3 * e; g.drawImage(SP.glowFire, ox - fh * 1.3, fy - fh * 1.5, fh * 2.6, fh * 2.6);
+      g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+      g.beginPath(); g.moveTo(ox - fw, fy); g.bezierCurveTo(ox - fw, fy - fh * .45, ox + sx - fw * .2, fy - fh * .7, ox + sx, fy - fh);
+      g.bezierCurveTo(ox + sx + fw * .2, fy - fh * .7, ox + fw, fy - fh * .45, ox + fw, fy); g.closePath();
+      const fg = g.createRadialGradient(ox, fy - fh * .2, 0, ox, fy - fh * .3, fh * .8);
+      fg.addColorStop(0, '#fff7e0'); fg.addColorStop(.3, '#ffd77a'); fg.addColorStop(.7, '#f08a12'); fg.addColorStop(1, 'rgba(200,60,10,0.2)');
+      g.fillStyle = fg; g.fill();
+      g.fillStyle = p.gold; g.beginPath(); g.ellipse(ox, fy + fh * .04, fw * 2.2, fw * .5, 0, 0, Math.PI); g.fill();
+    }
+  }
+};
+
+/* 4. Toran and marigold ------------------------------------------------- */
+const Toran = {
+  name: 'Toran',
+  build() {
+    const p = P(); this.cells = cells();
+    const br = 15 * U; this.br = br;
+    this.mg = [marigoldSprite(br, MARIGOLD[0], 1), marigoldSprite(br, MARIGOLD[1], 2), marigoldSprite(br, MARIGOLD[2], 3)];
+    this.leaf = leafSprite(78 * U, p);
+    this.y0 = H * 0.035; const scW = 300 * U; this.scW = scW;
+    const n = Math.ceil(W / (34 * U)); this.leaves = [];
+    for (let i = 0; i <= n; i++) { const x = i * W / n; this.leaves.push({ x, y: this.rope(x), ph: i * .7 }); }
+    this.strings = []; const sp = 50 * U; const ns = Math.floor(W / sp);
+    for (let i = 0; i < ns; i++) {
+      const x = (i + .5) * W / ns; const ph = (x % scW) / scW; const len = Math.round(4 + 7 * Math.sin(ph * Math.PI));
+      this.strings.push({ x, y: this.rope(x) + 6 * U, n: Math.min(len, Math.floor(H * .5 / (br * 1.85))), col: i % 3, ph: i * .37 });
+    }
+    // bandhani field below with ripple points
+    const gap = 42 * U; this.gap = gap; this.pts = [];
+    const fieldTop = H * 0.18;
+    this.src = this.cells.map(c => ({ x: c.cx, y: (fieldTop + H) / 2 + H * .08 }));
+    let row = 0;
+    for (let y = fieldTop; y < H + gap; y += gap * .8, row++) for (let x = (row % 2) * gap * .5; x < W + gap; x += gap) {
+      let best = 1e9, bs = this.src[0]; for (const s of this.src) { const d = Math.hypot(x - s.x, y - s.y); if (d < best) { best = d; bs = s; } }
+      const t = (row + Math.round(x / gap)) % 3 === 0 ? 0 : 1;
+      this.pts.push({ x, y, d: best, ux: (x - bs.x) / (best || 1), uy: (y - bs.y) / (best || 1), t });
+    }
+    this.hot = [clusterSprite(9, gap * .62, p.cream, p.main), clusterSprite(4, gap * .5, p.gold, p.main)];
+    this.bgL = mk(W, H, (g) => {
+      const gr = g.createLinearGradient(0, 0, 0, H); gr.addColorStop(0, p.deep); gr.addColorStop(.3, p.bg); gr.addColorStop(1, p.main);
+      g.fillStyle = gr; g.fillRect(0, 0, W, H);
+      const c9 = clusterSprite(9, gap * .62, rgba(p.cream, .3), rgba(p.main, .5)), c4 = clusterSprite(4, gap * .5, rgba(p.gold, .3), rgba(p.main, .5));
+      for (const q of this.pts) { const s = q.t ? c4 : c9; g.drawImage(s, q.x - s.width / 2, q.y - s.height / 2); }
+      for (const s of this.src) { const v = g.createRadialGradient(s.x, s.y, 0, s.x, s.y, H * .6); v.addColorStop(0, rgba(p.accent, .25)); v.addColorStop(1, rgba(p.accent, 0)); g.fillStyle = v; g.fillRect(0, 0, W, H); }
+    });
+  },
+  rope(x) { const t = (x % this.scW) / this.scW; return this.y0 + Math.sin(t * Math.PI) * 26 * U; },
+  swing(now, x) {
+    const del = Math.abs(x - W / 2) / W * 0.3; let s = 0;
+    for (const b of B.beats) s += envAt(now - b.t - del) * (b.n & 1 ? 1 : -1);
+    return s;
+  },
+  draw(g, now, dt) {
+    const p = P(), K = S.K, br = this.br;
+    g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+    g.drawImage(this.bgL, 0, 0);
+    // dhol-skin ripple
+    const speed = H * 1.1, fall = H * .9;
+    for (const q of this.pts) {
+      let a = 0; for (const b of B.beats) a += envAt(now - b.t - q.d / speed);
+      a *= K / (1 + q.d / fall); if (a < 0.04) continue;
+      const s = this.hot[q.t], sz = s.width * (1 + .45 * a), off = a * this.gap * .22;
+      g.globalAlpha = Math.min(1, a * 1.3);
+      g.drawImage(s, q.x + q.ux * off - sz / 2, q.y + q.uy * off - sz / 2, sz, sz);
+    }
+    g.globalAlpha = 1;
+    // marigold strings
+    for (const st of this.strings) {
+      const th = 0.03 * Math.sin(now * 1.2 + st.ph) + 0.16 * K * this.swing(now, st.x);
+      let x = st.x, y = st.y;
+      g.strokeStyle = rgba(p.gold, .6); g.lineWidth = 1.2 * U; g.beginPath(); g.moveTo(x, y);
+      const pos = [];
+      for (let j = 0; j < st.n; j++) { const a = th * (1 + j * .12); x += Math.sin(a) * br * 1.85; y += Math.cos(a) * br * 1.85; pos.push(x, y); g.lineTo(x, y); }
+      g.stroke();
+      for (let j = 0; j < st.n; j++) { const s = this.mg[(st.col + (j % 2 ? 1 : 0)) % 3]; g.drawImage(s, pos[j * 2] - s.width / 2, pos[j * 2 + 1] - s.height / 2); }
+      // little gold bell at the end
+      const ex = pos[pos.length - 2], ey = pos[pos.length - 1] + br * 1.2;
+      g.fillStyle = p.gold; g.beginPath(); g.moveTo(ex, ey - br * .5); g.quadraticCurveTo(ex + br * .6, ey - br * .4, ex + br * .55, ey + br * .35); g.lineTo(ex - br * .55, ey + br * .35); g.quadraticCurveTo(ex - br * .6, ey - br * .4, ex, ey - br * .5); g.fill();
+    }
+    // mango leaves
+    const lw = this.leaf.width, lh = this.leaf.height;
+    for (const l of this.leaves) {
+      const a = 0.02 * Math.sin(now * 1.5 + l.ph) + 0.06 * K * this.swing(now, l.x), ca = Math.cos(a), sa = Math.sin(a);
+      g.setTransform(ca, sa, -sa, ca, l.x, l.y); g.drawImage(this.leaf, -lw / 2, -lh * .04);
+    }
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    // rope
+    g.beginPath(); for (let x = 0; x <= W; x += 12 * U) { const y = this.rope(x); x ? g.lineTo(x, y) : g.moveTo(x, y); }
+    g.strokeStyle = p.gold; g.lineWidth = 6 * U; g.stroke();
+    g.setLineDash([6 * U, 8 * U]); g.strokeStyle = p.main; g.lineWidth = 4 * U; g.stroke(); g.setLineDash([]);
+  }
+};
+
+/* 5. Kutch mirror ------------------------------------------------------- */
+const Mirror = {
+  name: 'Kutch Mirror',
+  build() {
+    const p = P(); const g0 = 92 * U; this.g = g0; const r = g0 * .22; this.r = r; this.cells = cells();
+    this.pts = []; const cx = W / 2, cy = H / 2;
+    let row = 0;
+    for (let y = g0 * .5; y < H + g0 * .5; y += g0 * .866, row++) for (let x = (row % 2) * g0 * .5; x < W + g0; x += g0) {
+      let best = 1e9; for (const c of this.cells) best = Math.min(best, Math.hypot(x - c.cx, y - c.cy) * (this.cells.length > 1 ? 1 : 1));
+      this.pts.push({ x, y, d: best });
+    }
+    const tints = [p.gold, p.cream, mixHex(p.accent, p.gold, .35)];
+    this.bright = tints.map(t => mirrorSprite(r, true, p, t));
+    const thr = [p.gold, p.accent, p.green, p.cream];
+    this.bgL = mk(W, H, (g) => {
+      g.fillStyle = p.deep; g.fillRect(0, 0, W, H);
+      g.lineCap = 'round';
+      // chain stitch lattice
+      g.lineWidth = Math.max(1.5, g0 * .045); g.setLineDash([g0 * .05, g0 * .09]);
+      for (const q of this.pts) {
+        for (const [dx, dy, ci] of [[g0, 0, 0], [g0 * .5, g0 * .866, 1], [-g0 * .5, g0 * .866, 2]]) {
+          g.strokeStyle = rgba(thr[ci], .55); g.beginPath(); g.moveTo(q.x, q.y); g.lineTo(q.x + dx, q.y + dy); g.stroke();
+        }
+      }
+      g.setLineDash([]);
+      const dark = mirrorSprite(r, false, p);
+      for (const q of this.pts) {
+        // satin petals around mirror
+        for (let k = 0; k < 8; k++) {
+          const a = k / 8 * TAU + Math.PI / 8; g.fillStyle = k % 2 ? p.main : p.accent;
+          g.beginPath(); g.ellipse(q.x + Math.cos(a) * r * 1.35, q.y + Math.sin(a) * r * 1.35, r * .42, r * .2, a, 0, TAU); g.fill();
+        }
+        g.fillStyle = p.gold; g.beginPath(); g.arc(q.x, q.y, r * 1.12, 0, TAU); g.fill();
+        // buttonhole stitches
+        g.strokeStyle = p.deep; g.lineWidth = Math.max(1, r * .06);
+        for (let k = 0; k < 20; k++) { const a = k / 20 * TAU; g.beginPath(); g.moveTo(q.x + Math.cos(a) * r * .98, q.y + Math.sin(a) * r * .98); g.lineTo(q.x + Math.cos(a) * r * 1.12, q.y + Math.sin(a) * r * 1.12); g.stroke(); }
+        g.drawImage(dark, q.x - dark.width / 2, q.y - dark.height / 2);
+        // small diamond mirror between
+        const mx = q.x + g0 * .5, my = q.y + g0 * .29, s = r * .32;
+        g.fillStyle = p.gold; g.beginPath(); g.moveTo(mx, my - s * 1.5); g.lineTo(mx + s * 1.1, my); g.lineTo(mx, my + s * 1.5); g.lineTo(mx - s * 1.1, my); g.closePath(); g.fill();
+        g.fillStyle = '#4a4542'; g.beginPath(); g.moveTo(mx, my - s); g.lineTo(mx + s * .7, my); g.lineTo(mx, my + s); g.lineTo(mx - s * .7, my); g.closePath(); g.fill();
+      }
+    });
+  },
+  draw(g, now, dt) {
+    const K = S.K, r = this.r;
+    g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+    g.drawImage(this.bgL, 0, 0);
+    const speed = Math.max(W / this.cells.length, H) * 0.75, ring = this.g * 1.6, hi = LV.highN, mid = LV.midN;
+    const drift = Math.floor(now * 0.5);
+    const glow = [];
+    for (const q of this.pts) {
+      let a = 0; for (const b of B.beats) a += envAt(now - b.t - q.d / speed) * (b.n % 4 === 0 ? 1.15 : 0.9);
+      a = a * K * Math.max(0, 1 - q.d / (speed * 1.35)) + 0.12 * (hi * .6 + mid * .4) * Math.max(0, Math.sin(q.d * 0.012 - now * 3.5) - .5) * 2;
+      if (a < 0.04) continue;
+      a = Math.min(1, a);
+      const s = this.bright[(Math.floor(q.d / ring) + drift) % 3], sz = s.width * (1 + 0.12 * a);
+      g.globalAlpha = a; g.drawImage(s, q.x - sz / 2, q.y - sz / 2, sz, sz);
+      if (a > 0.45) glow.push(q.x, q.y, a);
+    }
+    g.globalCompositeOperation = 'lighter';
+    const gs = r * 2.4;
+    for (let i = 0; i < glow.length; i += 3) { g.globalAlpha = (glow[i + 2] - .45) * .55; g.drawImage(SP.glowGold, glow[i] - gs, glow[i + 1] - gs, gs * 2, gs * 2); }
+    g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+  }
+};
+
+/* 6. Clapper (sponsor) -------------------------------------------------- */
+const Clapper = {
+  name: 'Clapper', sparks: [], seen: 0,
+  build() {
+    const p = P();
+    // board sized in a 1024 unit space (after clapper-mark proportions)
+    this.sc = Math.min(H * 0.4 / 580, W * 0.3 / 790); const sc = this.sc;
+    this.body = mk(760 * sc, 400 * sc, (g, w, h) => {
+      g.scale(sc, sc);
+      g.fillStyle = mixHex(p.deep, '#000000', .35); g.beginPath(); g.roundRect(6, 6, 748, 388, 34); g.fill();
+      g.strokeStyle = rgba(p.gold, .9); g.lineWidth = 6; g.stroke();
+      g.strokeStyle = rgba(p.cream, .16); g.lineWidth = 18; g.lineCap = 'round';
+      for (const [y, x2] of [[108, 680], [196, 560], [284, 470]]) { g.beginPath(); g.moveTo(78, y); g.lineTo(x2, y); g.stroke(); }
+      g.fillStyle = p.gold; g.beginPath(); g.arc(648, 284, 52, 0, TAU); g.fill();
+      g.fillStyle = mixHex(p.gold, p.deep, .25); g.beginPath(); g.arc(648, 284, 30, 0, TAU); g.fill();
+    });
+    this.stick = mk(790 * sc, 180 * sc, (g, w, h) => {
+      g.scale(sc, sc);
+      g.save(); g.beginPath(); g.roundRect(4, 4, 780, 170, 26); g.clip();
+      g.fillStyle = p.main; g.fillRect(0, 0, 800, 180);
+      for (let x = -140; x < 900; x += 128) { g.fillStyle = p.cream; g.beginPath(); g.moveTo(x + 46, 0); g.lineTo(x + 112, 0); g.lineTo(x + 66, 180); g.lineTo(x, 180); g.closePath(); g.fill(); }
+      g.restore();
+      g.strokeStyle = p.gold; g.lineWidth = 6; g.beginPath(); g.roundRect(4, 4, 780, 170, 26); g.stroke();
+    });
+    this.ringN = 64;
+    this.dot9 = clusterSprite(9, 22 * U * 1.4, p.gold, p.deep);
+    this.dot4 = clusterSprite(4, 18 * U * 1.4, p.cream, p.deep);
+  },
+  overlay(g, now, dt, veil) {
+    const p = P(), K = S.K, sc = this.sc, cx = W / 2, cy = H * 0.42;
+    g.setTransform(1, 0, 0, 1, 0, 0); g.globalCompositeOperation = 'source-over';
+    // soft centre veil so the background stays alive at the edges
+    const vr = H * 0.62;
+    const v = g.createRadialGradient(cx, cy + H * .04, 0, cx, cy + H * .04, vr);
+    v.addColorStop(0, rgba(p.deep, .92 * veil)); v.addColorStop(.62, rgba(p.deep, .75 * veil)); v.addColorStop(1, rgba(p.deep, 0));
+    g.fillStyle = v; g.fillRect(cx - vr, cy + H * .04 - vr, vr * 2, vr * 2);
+    g.globalAlpha = .3 * veil; g.fillStyle = p.deep; g.fillRect(0, 0, W, H); g.globalAlpha = 1;
+    const e = beatEnv(now, 0) * K;
+    const bw = this.body.width, bh = this.body.height, R = Math.min(Math.hypot(bw, bh + this.stick.height) * 0.58, H * 0.34);
+    // ring of bandhani dots, a bright one laps once per bar
+    const phase = beatPhase(now), bar = ((B.count % 4) + Math.min(phase, 1)) / 4;
+    const chase = -Math.PI / 2 + bar * TAU;
+    for (let i = 0; i < this.ringN; i++) {
+      const a = -Math.PI / 2 + i / this.ringN * TAU; let dd = ((chase - a) % TAU + TAU) % TAU; const trail = dd < 1.2 ? 1 - dd / 1.2 : 0;
+      const rr = R * (1 + 0.04 * envAt(now - B.beats[0].t - i * 0)), s = i % 2 ? this.dot4 : this.dot9, z = s.width * (1 + trail * .6);
+      g.globalAlpha = .6 + .4 * trail; g.drawImage(s, cx + Math.cos(a) * rr - z / 2, cy + Math.sin(a) * rr - z / 2, z, z);
+    }
+    g.globalCompositeOperation = 'lighter'; g.globalAlpha = 1;
+    const hz = 40 * U; g.drawImage(SP.glowGold, cx + Math.cos(chase) * R - hz, cy + Math.sin(chase) * R - hz, hz * 2, hz * 2);
+    // pulse ring outward on each beat
+    const age = now - B.beats[0].t;
+    if (age < 0.7) { const k = age / 0.7; g.globalCompositeOperation = 'source-over'; g.globalAlpha = (1 - k) * .7 * Math.min(1, K); g.strokeStyle = p.gold; g.lineWidth = 4 * U * (1 - k) + 1; g.beginPath(); g.arc(cx, cy, R * (1 + .35 * easeOut(k)), 0, TAU); g.stroke(); }
+    g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+    // clapboard: open between beats, snap shut on the kick
+    let open;
+    if (phase < 0.16) open = 0; else if (phase < 0.6) open = easeOut((phase - .16) / .44); else if (phase < 0.86) open = 1; else open = 1 - easeIn(Math.min(1, (phase - .86) / .14));
+    const ang = -open * 0.4 * (0.6 + .4 * Math.min(1.4, K));
+    const bump = 1 + 0.025 * e;
+    const totalH = bh + this.stick.height;
+    const bx = cx - bw / 2 * bump, by = cy - totalH / 2 + this.stick.height;
+    g.setTransform(bump, 0, 0, bump, cx, cy); g.translate(-cx, -cy);
+    g.drawImage(this.body, cx - bw / 2, by);
+    const hx = cx - bw / 2 + 50 * sc, hy = by - 4 * sc;
+    const ca = Math.cos(ang), sa = Math.sin(ang);
+    g.setTransform(ca * bump, sa * bump, -sa * bump, ca * bump, cx + (hx - cx) * bump, cy + (hy - cy) * bump);
+    g.drawImage(this.stick, -44 * sc, -this.stick.height);
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.fillStyle = p.gold; g.beginPath(); g.arc(cx + (hx - cx) * bump, cy + (hy - cy) * bump, 30 * sc, 0, TAU); g.fill();
+    g.fillStyle = p.deep; g.beginPath(); g.arc(cx + (hx - cx) * bump, cy + (hy - cy) * bump, 12 * sc, 0, TAU); g.fill();
+    // sparks at the clap point
+    const tipX = cx + bw / 2 * bump - 20 * sc, tipY = cy + (hy - cy) * bump;
+    if (B.count !== this.seen) { this.seen = B.count; const R0 = Math.random; for (let i = 0; i < 22 * K && this.sparks.length < 300; i++) { const a = -Math.PI / 2 + (R0() - .3) * 2.2, vv = (200 + R0() * 500) * U; this.sparks.push({ x: tipX, y: tipY, vx: Math.cos(a) * vv, vy: Math.sin(a) * vv, life: 0, max: .4 + R0() * .4, s: (6 + R0() * 9) * U }); } }
+    g.globalCompositeOperation = 'lighter';
+    if (e > .3) { g.globalAlpha = (e - .3) * .9; const fs = 120 * U; g.drawImage(SP.glowGold, tipX - fs, tipY - fs, fs * 2, fs * 2); }
+    const out = [];
+    for (const s of this.sparks) { s.life += dt; if (s.life > s.max) continue; s.vy += 900 * U * dt; s.x += s.vx * dt; s.y += s.vy * dt; const k = 1 - s.life / s.max; g.globalAlpha = k; const z = s.s * (.6 + k); g.drawImage(SP.glowGold, s.x - z, s.y - z, z * 2, z * 2); out.push(s); }
+    this.sparks = out; g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+    // wordmark
+    const fs = Math.round(Math.min(H * 0.085, W * 0.05));
+    g.font = `700 ${fs}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+    try { g.letterSpacing = `${-0.02 * fs}px`; } catch (er) {}
+    g.textAlign = 'center'; g.textBaseline = 'alphabetic'; g.fillStyle = p.cream;
+    g.fillText('clapper.in', cx, Math.min(cy + R + fs * 1.3, H - fs * .35));
+    try { g.letterSpacing = '0px'; } catch (er) {}
+  },
+  draw(g, now, dt) { SCENES[bgScene].draw(g, now, dt); this.overlay(g, now, dt, 1); }
+};
+
+const SCENES = [Stripes, Mandala, Garbi, Toran, Mirror, Clapper];
+const NMAIN = 5;
+
+/* ----------------------------------------------------------------- state */
+const S = { K: 1 };
+let scene = clamp((parseInt(Q.get('scene')) || 2) - 1, 0, 4), bgScene = 4, front = 0, fade = null, pending = -1, auto = true, cycles = 0, clapOverlay = false;
+if (scene < NMAIN) bgScene = scene;
+const FADE = 1.6;
+function onBeat() {
+  if (auto && !fade && pending < 0 && B.count % 32 === 0) {
+    // patterns only: bandhani stripes <-> mandala, clapper every 4th switch
+    let nx;
+    nx = scene === 0 ? 1 : 0;   // stripes <-> mandala only
+    pending = nx;
+  }
+  if (pending >= 0 && !fade) { startFade(pending); pending = -1; }
+}
+function startFade(to) {
+  if (to === scene) return;
+  if (to === 5) bgScene = scene;
+  if (to < NMAIN && scene === 5) { /* outgoing clapper keeps drawing over its own bg */ }
+  fade = { from: scene, to, t0: performance.now() / 1000 };
+  const b = CV[1 - front]; b.style.zIndex = 2; CV[front].style.zIndex = 1; b.style.opacity = 0;
+}
+function rebuild() {
+  W = innerWidth; H = innerHeight; U = Math.min(H, W * 0.75) / 1000;
+  for (const c of CV) { c.width = W; c.height = H; }
+  buildShared(); for (const s of SCENES) s.build();
+}
+for (const c of CV) c.addEventListener('contextrestored', () => rebuild());
+addEventListener('resize', () => { clearTimeout(rebuild.t); rebuild.t = setTimeout(rebuild, 150); });
+
+/* ------------------------------------------------------------------ keys */
+let hudOn = Q.get('hud') === '1';
+addEventListener('keydown', (ev) => {
+  const k = ev.key, now = performance.now() / 1000;
+  if (!started && (k === ' ' || k === 'Enter')) { begin(); ev.preventDefault(); return; }
+  if (k === '1' || k === '2') pending = +k - 1;
+  else if (k === 'a' || k === 'A') auto = !auto;
+  else if (k === 'p' || k === 'P') { palIdx = (palIdx + 1) % PALS.length; buildShared(); for (const s of SCENES) s.build(); }
+  else if (k === 'f' || k === 'F') toggleFS();
+  else if (k === 't' || k === 'T') tap(now);
+  else if (k === 'h' || k === 'H') hudOn = !hudOn;
+  else if (k === 'l' || k === 'L') $('logo').classList.toggle('on');
+  // clapper removed
+  else if (k === 'i' || k === 'I') nextInput();
+  else if (k === 'ArrowUp') S.K = Math.min(1.8, S.K + .15);
+  else if (k === 'ArrowDown') S.K = Math.max(.3, S.K - .15);
+  else return;
+  ev.preventDefault();
+});
+function toggleFS() { if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {}); else document.exitFullscreen(); }
+let started = false;
+function begin() {
+  if (started) return; started = true; $('start').classList.add('gone'); document.body.classList.add('run');
+  if (DEMO) { if (ac) ac.resume(); return; }
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
+  startMic();
+}
+$('start').addEventListener('click', begin);
+addEventListener('click', () => { if (ac && ac.state !== 'running') ac.resume(); });
+
+/* ------------------------------------------------------------------ loop */
+let last = performance.now() / 1000, hudN = 0;
+window.__ft = [];
+function frame() {
+  const now = performance.now() / 1000, dt = clamp(now - last, 0, 0.1);
+  window.__ft.push((now - last) * 1000); if (window.__ft.length > 1200) window.__ft.shift();
+  last = now;
+  analyse(now, dt); clock(now);
+  if (fade) {
+    const k = clamp((now - fade.t0) / FADE, 0, 1);
+    SCENES[fade.from].draw(CX[front], now, dt); if (clapOverlay && fade.from !== 5) Clapper.overlay(CX[front], now, 0, .8);
+    SCENES[fade.to].draw(CX[1 - front], now, dt); if (clapOverlay && fade.to !== 5) Clapper.overlay(CX[1 - front], now, dt, .8);
+    CV[1 - front].style.opacity = easeIO(k);
+    if (k >= 1) { scene = fade.to; if (scene < NMAIN) bgScene = scene; CV[front].style.opacity = 0; CV[front].style.zIndex = 0; front = 1 - front; CV[front].style.opacity = 1; fade = null; }
+  } else {
+    SCENES[scene].draw(CX[front], now, dt);
+    if (clapOverlay && scene !== 5) Clapper.overlay(CX[front], now, dt, .8);
+  }
+  if (hudOn && (hudN++ % 6 === 0)) {
+    $('hud').style.display = 'block';
+    $('hud').textContent = `scene   ${scene + 1} ${SCENES[scene].name}${fade ? ' > ' + SCENES[fade.to].name : ''}${pending >= 0 ? ' (next ' + (pending + 1) + ')' : ''}\nbpm     ${B.bpm.toFixed(1)}  src ${B.src}  beat ${B.count}\nlow     ${bar(LV.lowN)}\nmid     ${bar(LV.midN)}\nhigh    ${bar(LV.highN)}\nenergy  ${bar(LV.energy)}\nauto    ${auto ? 'on' : 'off'}   clapper ${clapOverlay ? 'on' : 'off'}\npalette ${P().name}   intensity ${S.K.toFixed(2)}\naudio   ${audioNote}\nsize    ${W}x${H}`;
+  } else if (!hudOn) $('hud').style.display = 'none';
+  requestAnimationFrame(frame);
+}
+function bar(v) { const n = Math.round(clamp(v, 0, 1) * 20); return '#'.repeat(n) + '.'.repeat(20 - n) + ' ' + v.toFixed(2); }
+
+rebuild();
+CV[front].style.opacity = 1; CV[front].style.zIndex = 1;
+if (Q.get('auto') === '0') auto = false;
+if (Q.get('pal')) palIdx = clamp(parseInt(Q.get('pal')) || 0, 0, 3), rebuild();
+B.next = performance.now() / 1000 + 0.3;
+if (DEMO) { started = true; $('start').classList.add('gone'); startDemo(); }
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

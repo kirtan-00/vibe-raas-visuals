@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vibe Raas Visuals</title>
+<style>
+@font-face{font-family:"Rozha";src:url(fonts/RozhaOne-Regular.ttf)}
+@font-face{font-family:"Cormorant";src:url(fonts/CormorantGaramond-Italic.ttf);font-style:italic}
+@font-face{font-family:"Poppins";src:url(fonts/Poppins-Medium.ttf);font-weight:500}
+:root{--deep:#1c0104;--bg:#2a0207;--red:#8e0f1c;--gold:#e9c783;--cream:#f6e7c8;--dim:#b9895a}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--deep);color:var(--cream);font-family:"Poppins",system-ui,sans-serif;font-weight:500;min-height:100vh}
+header{padding:48px 24px 28px;text-align:center;border-bottom:6px solid var(--gold);background:var(--bg)}
+header img{width:220px;max-width:60vw;display:block;margin:0 auto 10px}
+header p{font-family:"Cormorant";font-style:italic;font-size:28px;color:var(--gold)}
+main{max-width:1180px;margin:0 auto;padding:36px 16px 24px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:22px}
+a.card{display:block;text-decoration:none;color:inherit;background:var(--bg);border:3px solid var(--dim);border-radius:14px;overflow:hidden;transition:border-color .15s,transform .15s}
+a.card:hover,a.card:focus-visible{border-color:var(--gold);transform:translateY(-3px);outline:none}
+a.card img{display:block;width:100%;aspect-ratio:25/9;object-fit:cover;border-bottom:3px solid var(--dim)}
+.card div{padding:16px 18px 18px}
+.card h2{font-family:"Rozha";font-weight:400;font-size:32px;color:var(--gold);line-height:1.1}
+.card span{display:block;margin-top:6px;font-size:15px;line-height:1.45;color:#e8d6b8}
+.num{float:right;font-size:13px;letter-spacing:.14em;color:var(--dim)}
+section.how{margin-top:40px;background:var(--bg);border-left:6px solid var(--gold);border-radius:10px;padding:22px 24px}
+.how h3{font-family:"Rozha";font-weight:400;font-size:26px;color:var(--gold);margin-bottom:10px}
+.how ol{padding-left:22px;line-height:1.75;font-size:16px}
+.keys{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px 18px;font-size:15px}
+kbd{display:inline-block;min-width:28px;text-align:center;background:var(--deep);border:2px solid var(--dim);border-radius:6px;padding:1px 7px;color:var(--gold);font-family:inherit}
+footer{text-align:center;padding:28px 16px 40px;font-size:13px;letter-spacing:.14em;color:var(--dim)}
+</style>
+</head>
+<body>
+<header>
+ <img src="img/logo.png" alt="Vibe Raas 2026">
+ <p>Visuals for the LED screens</p>
+</header>
+<main>
+ <div class="grid">
+  <a class="card" href="tunnel/"><img src="img/tunnel.jpg" alt=""><div><b class="num">01</b><h2>Bandhani Tunnel</h2><span>Fly into rings of bandhani. Every dhol hit fires a gold ring and a camera punch.</span></div></a>
+  <a class="card" href="stripes/"><img src="img/stripes.jpg" alt=""><div><b class="num">02</b><h2>Bandhani Stripes</h2><span>Bandhani bands scroll and swell on each drum hit. Press 2 for the mandala.</span></div></a>
+  <a class="card" href="ghoomar/"><img src="img/ghoomar.jpg" alt=""><div><b class="num">03</b><h2>Ghoomar Mandala</h2><span>A bandhani mandala that spins with the tempo and flares on every hit.</span></div></a>
+ </div>
+ <section class="how">
+  <h3>For the VJ</h3>
+  <ol>
+   <li>Open this page in <b>Chrome</b> on the laptop going to the LED.</li>
+   <li>Pick a visual. Drag the window onto the LED display.</li>
+   <li>Click once and press <b>Allow</b> for the microphone. Use the mixer line out if you can, or the laptop mic.</li>
+   <li>Press <kbd>F</kbd> for fullscreen. It reacts to drum beats only.</li>
+  </ol>
+  <div class="keys">
+   <span><kbd>T</kbd> tap tempo</span><span><kbd>P</kbd> colours</span><span><kbd>&uarr;</kbd><kbd>&darr;</kbd> intensity</span>
+   <span><kbd>I</kbd> next audio input</span><span><kbd>H</kbd> beat info</span><span><kbd>L</kbd> logo</span><span><kbd>Esc</kbd> exit fullscreen, then Back for this page</span>
+  </div>
+ </section>
+</main>
+<footer>SUNDAY, 18 OCTOBER 2026 &bull; TATHASTU PARTY PLOT, OGNAJ</footer>
+</body>
+</html>

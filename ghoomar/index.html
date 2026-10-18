@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ghoomar Twirl</title>
+<style>
+  html,body{margin:0;height:100%;background:#1c0104;overflow:hidden}
+  body.run{cursor:none}
+  canvas{position:fixed;left:0;top:0;width:100vw;height:100vh;display:block}
+  #logo{position:fixed;right:2.4vmin;bottom:2.4vmin;height:9vmin;opacity:0;transition:opacity .8s;pointer-events:none;z-index:5}
+  #logo.on{opacity:.92}
+  #hud{position:fixed;left:12px;top:12px;font:12px/1.55 Menlo,ui-monospace,monospace;color:#f6e7c8;background:rgba(24,3,6,.82);padding:10px 14px;border:1px solid rgba(233,199,131,.45);display:none;z-index:6;white-space:pre}
+  #start{position:fixed;inset:0;z-index:7;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2.2vmin;
+    background:rgba(28,1,4,.72);color:#f6e7c8;font-family:Georgia,'Times New Roman',serif;cursor:pointer;text-align:center}
+  #start h1{margin:0;font-weight:400;font-size:6vmin;letter-spacing:.02em;color:#e9c783}
+  #start p{margin:0;font-size:2.2vmin;opacity:.8;max-width:70vmin;line-height:1.5}
+  #start .k{font-family:Menlo,monospace;font-size:1.6vmin;opacity:.55}
+  #start.gone{display:none}
+</style>
+</head>
+<body>
+<canvas id="a"></canvas>
+<img id="logo" src="assets/logo_gold.png" alt="">
+<div id="hud"></div>
+<div id="start">
+  <h1>Click to begin</h1>
+  <p>Allow the microphone so the skirt follows the dhol. No mic? It keeps its own beat at 128.</p>
+  <p class="k">T tap &middot; P palette &middot; I input &middot; L logo &middot; F fullscreen &middot; H info &middot; arrows intensity</p>
+</div>
+<script>
+'use strict';
+/* ------------------------------------------------------------------ utils */
+const $ = id => document.getElementById(id);
+const Q = new URLSearchParams(location.search);
+const DEMO = Q.get('demo') === '1';
+const CV = $('a');
+const G = CV.getContext('2d', { alpha: false });
+let W = 0, H = 0, U = 1;
+const TAU = Math.PI * 2;
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+function rgba(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`; }
+function mixHex(h1, h2, t) {
+  const a = parseInt(h1.slice(1), 16), b = parseInt(h2.slice(1), 16);
+  const r = Math.round(lerp(a >> 16 & 255, b >> 16 & 255, t)), g = Math.round(lerp(a >> 8 & 255, b >> 8 & 255, t)), bl = Math.round(lerp(a & 255, b & 255, t));
+  return '#' + ((1 << 24) | (r << 16) | (g << 8) | bl).toString(16).slice(1);
+}
+function lum(hex) { const n = parseInt(hex.slice(1), 16); return (0.299 * (n >> 16 & 255) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255)) / 255; }
+function mk(w, h, fn) { const c = document.createElement('canvas'); c.width = Math.max(1, Math.ceil(w)); c.height = Math.max(1, Math.ceil(h)); fn(c.getContext('2d'), c.width, c.height); return c; }
+function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const easeIO = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+const wrapPI = a => { a = (a + Math.PI) % TAU; if (a < 0) a += TAU; return a - Math.PI; };
+
+/* --------------------------------------------------------------- palettes */
+const PALS = [
+  { name: 'Kumkum', deep: '#1c0104', bg: '#3a0309', panels: ['#8e0f1c', '#3a0309', '#f2992e', '#e9c783'], band: '#c4422a', gold: '#e9c783', cream: '#f6e7c8', cloth: '#2a0207' },
+  { name: 'Haldi',  deep: '#2a0902', bg: '#4a1204', panels: ['#e8a317', '#b8231a', '#f2992e', '#6b1a06'], band: '#8e0f1c', gold: '#f6c64a', cream: '#fff0c4', cloth: '#3a0d02' },
+  { name: 'Mor',    deep: '#021a1d', bg: '#04282c', panels: ['#0d6964', '#063238', '#1f8a6a', '#d9b45a'], band: '#7a1a2a', gold: '#d9b45a', cream: '#eef0d6', cloth: '#021e20' },
+  { name: 'Raat',   deep: '#05061a', bg: '#0d1030', panels: ['#242a6a', '#0f1238', '#8e1a2a', '#e5c06a'], band: '#8e1a2a', gold: '#e5c06a', cream: '#f3e6c4', cloth: '#080a22' },
+];
+let palIdx = 0;
+const P = () => PALS[palIdx];
+
+/* ------------------------------------------------------------------ beat */
+const ATT = 0.05, DEC = 0.45;
+function envAt(dt) {
+  if (dt < 0) return 0;
+  if (dt < ATT) { const x = dt / ATT; return 1 - (1 - x) * (1 - x); }
+  const d = (dt - ATT) / DEC; if (d >= 1) return 0;
+  const y = 1 - d; return y * y * (3 - 2 * y);
+}
+const B = { bpm: 128, period: 60 / 128, beats: [], count: 0, next: 0, lastOnset: -99, onsets: [], taps: [], src: 'auto', claps: 0, lastClap: -99 };
+for (let i = 0; i < 4; i++) B.beats.push({ t: -99, n: -i });
+function fireBeat(t) {
+  B.count++;
+  B.beats.unshift({ t, n: B.count }); B.beats.length = 4;
+  onBeat(t);
+}
+function beatEnv(now, delay) { let e = 0; for (const b of B.beats) { const v = envAt(now - b.t - delay); if (v > e) e = v; } return e; }
+function setBpm(bpm) { B.bpm = clamp(bpm, 60, 200); B.period = 60 / B.bpm; }
+
+/* ----------------------------------------------------------------- audio */
+let ac = null, analyser = null, fd = null, pfd = null, micStream = null, srcNode = null, devices = [], devIdx = -1, audioNote = 'none';
+const LV = { pkL: .05, pkM: .05, pkH: .05, pkA: .05, lowN: 0, midN: 0, highN: 0, energy: 0, pkKF: .02, pkCF: .02, kf: [], cf: [] };
+function initCtx() {
+  if (ac) return;
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+  analyser = ac.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.2;
+  analyser.minDecibels = -95; analyser.maxDecibels = -15;
+  fd = new Uint8Array(analyser.frequencyBinCount); pfd = new Uint8Array(analyser.frequencyBinCount);
+  const sink = ac.createGain(); sink.gain.value = 0; analyser.connect(sink); sink.connect(ac.destination);
+}
+async function startMic(deviceId) {
+  initCtx(); try { await ac.resume(); } catch (e) {}
+  try {
+    const c = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+    if (deviceId) c.deviceId = { exact: deviceId };
+    const s = await navigator.mediaDevices.getUserMedia({ audio: c });
+    if (srcNode) srcNode.disconnect();
+    if (micStream) micStream.getTracks().forEach(t => t.stop());
+    micStream = s; srcNode = ac.createMediaStreamSource(s); srcNode.connect(analyser);
+    audioNote = 'mic: ' + (s.getAudioTracks()[0].label || 'input');
+    try { devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput'); } catch (e) {}
+  } catch (e) { audioNote = 'no mic (' + e.name + '), auto beat'; }
+}
+async function nextInput() {
+  if (!devices.length) { await startMic(); return; }
+  devIdx = (devIdx + 1) % devices.length; await startMic(devices[devIdx].deviceId);
+}
+function startDemo() {
+  initCtx(); ac.resume().catch(() => {});
+  audioNote = 'demo track 128 BPM';
+  const out = ac.createGain(); out.gain.value = 0.9; out.connect(analyser);
+  const nb = ac.createBuffer(1, ac.sampleRate * 0.3, ac.sampleRate), nd = nb.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  const per = 60 / 128; let t0 = ac.currentTime + 0.2, k = 0;
+  function kick(t) {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.14);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(1, t + 0.004); g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.35);
+  }
+  function hat(t, lvl) {
+    const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    s.buffer = nb; f.type = 'highpass'; f.frequency.value = 6000;
+    g.gain.setValueAtTime(lvl, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+    s.connect(f); f.connect(g); g.connect(out); s.start(t); s.stop(t + 0.08);
+  }
+  function clap(t) {
+    const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    s.buffer = nb; f.type = 'bandpass'; f.frequency.value = 2400; f.Q.value = 0.9;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.9, t + 0.003); g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+    s.connect(f); f.connect(g); g.connect(out); s.start(t); s.stop(t + 0.14);
+  }
+  function tone(t) {
+    const o = ac.createOscillator(), g = ac.createGain(); o.type = 'triangle'; o.frequency.value = 440 + 110 * (k % 3);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.01); g.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.3);
+  }
+  setInterval(() => {
+    while (t0 < ac.currentTime + 0.15) { kick(t0); hat(t0 + per / 2, 0.35); hat(t0 + per / 4, 0.12); if (k % 2) { tone(t0 + per * 0.75); clap(t0 + per * 0.5); } t0 += per; k++; }
+  }, 25);
+}
+function hzBin(hz) { return Math.round(hz / (ac.sampleRate / analyser.fftSize)); }
+function band(lo, hi) {
+  const a = Math.max(1, hzBin(lo)), b = Math.min(fd.length - 1, hzBin(hi));
+  let s = 0; for (let i = a; i <= b; i++) { const v = fd[i] / 255; s += v * v; } return s / (b - a + 1);
+}
+// spectral flux: summed positive per-bin rise across a band
+function flux(lo, hi) {
+  const a = Math.max(1, hzBin(lo)), b = Math.min(fd.length - 1, hzBin(hi));
+  let s = 0; for (let i = a; i <= b; i++) { const d = fd[i] - pfd[i]; if (d > 0) s += d; } return s / ((b - a + 1) * 255);
+}
+function adapt(hist, v, n) { hist.push(v); if (hist.length > n) hist.shift(); let m = 0; for (const f of hist) m += f; m /= hist.length; let q = 0; for (const f of hist) q += (f - m) * (f - m); return [m, Math.sqrt(q / hist.length)]; }
+function analyse(now, dt) {
+  if (!analyser || ac.state !== 'running' || (!srcNode && !DEMO)) { LV.lowN *= .95; LV.midN *= .95; LV.highN *= .95; LV.energy = lerp(LV.energy, 0.35, dt); return; }
+  analyser.getByteFrequencyData(fd);
+  const low = band(40, 150), mid = band(300, 2000), high = band(4000, 12000), all = (low + mid + high) / 3;
+  LV.pkL = Math.max(low, LV.pkL * 0.9993, 0.004); LV.pkM = Math.max(mid, LV.pkM * 0.9993, 0.002); LV.pkH = Math.max(high, LV.pkH * 0.9993, 0.001); LV.pkA = Math.max(all, LV.pkA * 0.9993, 0.003);
+  LV.lowN = low / LV.pkL; LV.midN = lerp(LV.midN, mid / LV.pkM, .35); LV.highN = lerp(LV.highN, high / LV.pkH, .5);
+  const a = all / LV.pkA; LV.energy = a > LV.energy ? lerp(LV.energy, a, .2) : lerp(LV.energy, a, .025);
+  // dhol / kick: 40-150 Hz flux, adaptive threshold
+  const kfr = flux(40, 150); LV.pkKF = Math.max(kfr, LV.pkKF * 0.999, 0.004); const kf = kfr / LV.pkKF;
+  const [km, ks] = adapt(LV.kf, kf, 45);
+  if (kf > km + 1.5 * ks + 0.08 && LV.lowN > 0.35 && low > 0.002 && now - B.lastOnset > 0.25) onset(now);
+  // taali / clap: 1.5-4 kHz transient
+  const cfr = flux(1500, 4000); LV.pkCF = Math.max(cfr, LV.pkCF * 0.999, 0.003); const cf = cfr / LV.pkCF;
+  const [cm, cs] = adapt(LV.cf, cf, 45);
+  if (cf > cm + 2 * cs + 0.12 && cf > 0.3 && now - B.lastClap > 0.13) { B.lastClap = now; B.claps++; }   // counted for the HUD only, visuals follow drums
+  pfd.set(fd);
+}
+function onset(now) {
+  const ioi = now - B.lastOnset; B.lastOnset = now;
+  if (ioi > 0.25 && ioi < 1.5) {
+    B.onsets.push(ioi); if (B.onsets.length > 10) B.onsets.shift();
+    if (B.onsets.length >= 4) {
+      const f = B.onsets.map(x => { let bpm = 60 / x; while (bpm < 92) bpm *= 2; while (bpm > 184) bpm /= 2; return bpm; }).sort((p, q) => p - q);
+      const med = f[f.length >> 1]; setBpm(lerp(B.bpm, med, .3));
+    }
+  }
+  B.src = 'audio';
+  fireBeat(now); B.next = now + B.period;
+}
+function clock(now) {
+  const live = now - B.lastOnset < 2.2;
+  if (live) return;
+  B.src = B.taps.length >= 2 ? 'tap' : 'auto';
+  if (now >= B.next) {
+    if (now - B.next > B.period) B.next = now;
+    fireBeat(B.next);
+    // no audio: give the mirrors a soft offbeat sparkle so the hem never goes dead
+    B.next += B.period;
+  }
+}
+function tap(now) {
+  if (B.taps.length && now - B.taps[B.taps.length - 1] > 2.5) B.taps = [];
+  B.taps.push(now); if (B.taps.length > 6) B.taps.shift();
+  if (B.taps.length >= 2) { const iv = (B.taps[B.taps.length - 1] - B.taps[0]) / (B.taps.length - 1); setBpm(60 / iv); }
+  B.lastOnset = -99; fireBeat(now); B.next = now + B.period;
+}
+
+/* --------------------------------------------------------------- sprites */
+const N = 24, HA = Math.PI / N;         // panels, half angle
+const SP = {};
+let RW = 400;                            // sprite radius in px
+function glowSprite(col, s = 128, a0 = 1) {
+  return mk(s, s, (g) => {
+    const gr = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+    gr.addColorStop(0, rgba(col, a0)); gr.addColorStop(0.25, rgba(col, a0 * .5)); gr.addColorStop(0.6, rgba(col, a0 * .12)); gr.addColorStop(1, rgba(col, 0));
+    g.fillStyle = gr; g.fillRect(0, 0, s, s);
+  });
+}
+function starSprite(col, core, s = 96) {
+  return mk(s, s, (g) => {
+    const c = s / 2;
+    const gr = g.createRadialGradient(c, c, 0, c, c, c); gr.addColorStop(0, rgba(core, .9)); gr.addColorStop(.18, rgba(col, .55)); gr.addColorStop(1, rgba(col, 0));
+    g.fillStyle = gr; g.fillRect(0, 0, s, s);
+    g.fillStyle = rgba(core, .9);
+    for (const r of [0, Math.PI / 2]) { g.save(); g.translate(c, c); g.rotate(r); g.beginPath(); g.moveTo(-c * .95, 0); g.quadraticCurveTo(0, c * .05, c * .95, 0); g.quadraticCurveTo(0, -c * .05, -c * .95, 0); g.fill(); g.restore(); }
+  });
+}
+// annular sector path in wedge-local coords (wedge points along +x)
+function sector(g, r0, r1, ha) { g.beginPath(); g.arc(0, 0, r1, -ha, ha); g.arc(0, 0, r0, ha, -ha, true); g.closePath(); }
+const IN_R = 0.62, OUT_R0 = 0.52;        // inner sprite covers 0..IN_R, outer covers OUT_R0..1
+let MIRRORS = [];                         // mirror positions in wedge-local (unit radius)
+function cluster(g, x, y, r, col, eye) {
+  for (const [dx, dy] of [[0, 0], [0, -1], [1, 0], [0, 1], [-1, 0]]) {
+    g.fillStyle = col; g.beginPath(); g.arc(x + dx * r * 2.1, y + dy * r * 2.1, r, 0, TAU); g.fill();
+    g.fillStyle = eye; g.beginPath(); g.arc(x + dx * r * 2.1, y + dy * r * 2.1, r * .38, 0, TAU); g.fill();
+  }
+}
+function panelArt(g, R, col, idx, p, part) {
+  const ha = HA * 1.06, dark = lum(col) < 0.45;
+  const dotA = dark ? p.cream : p.deep, eye = mixHex(col, '#000000', .35);
+  g.save();
+  g.beginPath(); g.moveTo(0, 0); g.arc(0, 0, R * 1.001, -ha, ha); g.closePath(); g.clip();
+  g.fillStyle = col; g.fillRect(-2, -R, R + 4, R * 2);
+  const rg = g.createRadialGradient(0, 0, 0, 0, 0, R);
+  rg.addColorStop(0, 'rgba(0,0,0,.5)'); rg.addColorStop(.3, 'rgba(0,0,0,.12)'); rg.addColorStop(.6, 'rgba(0,0,0,0)'); rg.addColorStop(1, 'rgba(0,0,0,.1)');
+  g.fillStyle = rg; g.fillRect(-2, -R, R + 4, R * 2);
+  // bandhani: a single radial line of dot clusters down the panel, small dots flanking
+  for (let k = 0, r = R * 0.27; r < R * 0.74; r += R * 0.085, k++) {
+    if (part === 0 ? r > R * 0.47 : r < R * 0.57) continue;
+    const cr = r * Math.sin(HA) * 0.16;
+    cluster(g, r, 0, cr, dotA, eye);
+    if (r > R * 0.4) for (const sgn of [-1, 1]) { const a = sgn * HA * 0.66, rr = r + R * 0.042; g.fillStyle = rgba(dotA, .85); g.beginPath(); g.arc(Math.cos(a) * rr, Math.sin(a) * rr, cr * .9, 0, TAU); g.fill(); }
+  }
+  // rim: a bandhani ring on deep cloth
+  sector(g, R * 0.80, R * 1.0, ha); g.fillStyle = p.cloth; g.fill();
+  for (const m of MIRRORS) cluster(g, m.x * R, m.y * R, m.r * R, m.big ? p.gold : p.cream, p.cloth);
+  g.strokeStyle = p.gold; g.lineWidth = Math.max(1.5, R * .008);
+  for (const r of [0.80, 0.992]) { g.beginPath(); g.arc(0, 0, R * r, -ha, ha); g.stroke(); }
+  // pleat fold shading
+  const cg = g.createConicGradient(-ha, 0, 0), f = 2 * ha / TAU;
+  cg.addColorStop(0, 'rgba(0,0,0,.35)'); cg.addColorStop(f * .35, 'rgba(0,0,0,0)'); cg.addColorStop(f * .5, 'rgba(255,236,200,.08)'); cg.addColorStop(f * .7, 'rgba(0,0,0,0)'); cg.addColorStop(f, 'rgba(0,0,0,.4)'); cg.addColorStop(f + .001, 'rgba(0,0,0,0)'); cg.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = cg; g.fillRect(-2, -R, R + 4, R * 2);
+  g.restore();
+}
+function buildMirrors() {
+  MIRRORS = [];
+  const rows = [[0.855, 2, 0, 0.011, true], [0.94, 3, 0, 0.009, false]];
+  for (const [r, n, off, cr, big] of rows) for (let i = 0; i < n; i++) {
+    const a = -HA + (i + 0.5 + off) / n * 2 * HA;
+    MIRRORS.push({ x: Math.cos(a) * r, y: Math.sin(a) * r, r: cr, big });
+  }
+}
+function buildSkirtSprites() {
+  const p = P(); buildMirrors();
+  const R = RW, hh = Math.ceil(Math.sin(HA * 1.08) * R) + 2;
+  const xo0 = Math.floor(OUT_R0 * R * Math.cos(HA * 1.08)) - 2;
+  SP.geo = { R, hh, xo0 };
+  SP.inner = []; SP.outer = [];
+  p.panels.forEach((col, idx) => {
+    SP.inner.push(mk(R * IN_R + 2, hh * 2, (g) => { g.translate(0, hh); g.save(); g.beginPath(); g.rect(0, -hh, R * IN_R, hh * 2); g.clip(); panelArt(g, R, col, idx, p, 0); g.restore(); }));
+    SP.outer.push(mk(R - xo0 + 2, hh * 2, (g) => { g.translate(-xo0, hh); g.save(); g.beginPath(); g.moveTo(0, 0); g.arc(0, 0, R + 2, -HA * 1.08, HA * 1.08); g.closePath(); g.arc(0, 0, OUT_R0 * R, HA * 1.08, -HA * 1.08, true); g.clip(); panelArt(g, R, col, idx, p, 1); g.restore(); }));
+  });
+  // lit mirrors overlay (warm, never pure white)
+  SP.lit = mk(R - xo0 + 2, hh * 2, (g) => {
+    g.translate(-xo0, hh); g.globalCompositeOperation = 'lighter';
+    for (const m of MIRRORS) {
+      const x = m.x * R, y = m.y * R, r = m.r * R;
+      const gr = g.createRadialGradient(x, y, 0, x, y, r * 4.2);
+      gr.addColorStop(0, rgba('#fff1d2', .8)); gr.addColorStop(.3, rgba(p.cream, .55)); gr.addColorStop(.6, rgba(p.gold, .22)); gr.addColorStop(1, rgba(p.gold, 0));
+      g.fillStyle = gr; g.beginPath(); g.arc(x, y, r * 4.2, 0, TAU); g.fill();
+    }
+  });
+  // waist: top of the dancer (blouse, dupatta knot, rosette)
+  const wr = R * 0.2;
+  SP.waist = mk(wr * 2.2, wr * 2.2, (g, sz) => {
+    const c = sz / 2; g.translate(c, c);
+    g.fillStyle = p.cloth; g.beginPath(); g.arc(0, 0, wr, 0, TAU); g.fill();
+    g.strokeStyle = p.gold; g.lineWidth = Math.max(1.5, wr * .03); g.beginPath(); g.arc(0, 0, wr * .97, 0, TAU); g.stroke();
+    for (const [rr, n, cr, col] of [[0.78, 14, 0.05, p.cream], [0.5, 9, 0.05, p.gold], [0.24, 5, 0.045, p.cream]]) {
+      for (let i = 0; i < n; i++) { const a = i / n * TAU; cluster(g, Math.cos(a) * wr * rr, Math.sin(a) * wr * rr, wr * cr * .45, col, p.cloth); }
+    }
+    g.fillStyle = p.panels[0]; g.beginPath(); g.arc(0, 0, wr * .07, 0, TAU); g.fill();
+  });
+  SP.shadow = glowSprite('#000000', 256, .85);
+  SP.glowGold = glowSprite(p.gold, 128);
+  SP.star = starSprite(p.gold, '#fff1d0');
+}
+
+/* ---------------------------------------------------------------- layout */
+let DANCERS = [];
+function layout() {
+  const asp = W / H; DANCERS = [];
+  if (asp < 2.3) {
+    DANCERS.push({ cx: W / 2, cy: H / 2, R: Math.min(W, H) * 0.42, dir: 1, ph: 0, delay: 0 });
+  } else {
+    const n = asp < 5.5 ? 3 : 5, sp = W / n;
+    for (let i = 0; i < n; i++) {
+      const k = i - (n - 1) / 2, main = k === 0;
+      const R = main ? Math.min(H * 0.43, sp * 0.4) : Math.min(H * 0.34, sp * 0.33);
+      DANCERS.push({ cx: W / 2 + k * sp, cy: H / 2, R, dir: Math.abs(k) % 2 ? -1 : 1, ph: k * 0.37, delay: Math.abs(k) * 0.07 });
+    }
+  }
+  RW = Math.ceil(Math.max(...DANCERS.map(d => d.R)) * 1.12);
+}
+function buildBg() {
+  const p = P();
+  SP.bg = mk(W, H, (g) => {
+    const gr = g.createLinearGradient(0, 0, 0, H); gr.addColorStop(0, p.deep); gr.addColorStop(.5, p.bg); gr.addColorStop(1, p.deep);
+    g.fillStyle = gr; g.fillRect(0, 0, W, H);
+    // faint bandhani field
+    const gap = 44 * U; let row = 0;
+    for (let y = gap * .5; y < H + gap; y += gap * .8, row++) for (let x = (row % 2) * gap * .5; x < W + gap; x += gap) {
+      const big = (row + Math.round(x / gap)) % 3 === 0;
+      g.fillStyle = rgba(big ? p.cream : p.gold, big ? .09 : .06); g.beginPath(); g.arc(x, y, gap * (big ? .07 : .05), 0, TAU); g.fill();
+    }
+    // warm floor pools under each dancer
+    for (const d of DANCERS) {
+      const v = g.createRadialGradient(d.cx, d.cy, d.R * .5, d.cx, d.cy, d.R * 1.7);
+      v.addColorStop(0, rgba(p.panels[0], .35)); v.addColorStop(1, rgba(p.panels[0], 0)); g.fillStyle = v; g.fillRect(0, 0, W, H);
+      g.strokeStyle = rgba(p.gold, .14); g.lineWidth = Math.max(1, 2 * U);
+      for (const k of [1.32, 1.42]) { g.beginPath(); g.arc(d.cx, d.cy, d.R * k, 0, TAU); g.stroke(); }
+      g.setLineDash([2 * U, 14 * U]); g.lineWidth = 4 * U; g.strokeStyle = rgba(p.gold, .22);
+      g.beginPath(); g.arc(d.cx, d.cy, d.R * 1.37, 0, TAU); g.stroke(); g.setLineDash([]);
+    }
+    const vg = g.createRadialGradient(W / 2, H / 2, Math.min(W, H) * .3, W / 2, H / 2, Math.max(W, H) * .65);
+    vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,.5)'); g.fillStyle = vg; g.fillRect(0, 0, W, H);
+  });
+}
+
+/* ------------------------------------------------------------ skirt motion */
+const M = { ang: 0, spd: 0.6, dir: 1, rev: null, flare: 0.3, dip: 0, ripples: [], sparks: [] };
+function onBeat(t) {
+  M.ripples.push({ t, a: -Math.PI / 2 + (B.count % 4) * Math.PI / 2 }); if (M.ripples.length > 4) M.ripples.shift();
+  if (B.count % 16 === 0 && !M.rev) M.rev = { t0: t, from: M.dir, to: -M.dir, dur: Math.max(0.9, B.period * 2) };
+}
+function onClap(now, soft) {
+  M.clapT = now; M.clapK = soft ? 0.5 : 1; return;
+  for (const d of DANCERS) {
+    const n = soft ? 5 : 10;
+    for (let i = 0; i < n && M.sparks.length < 200; i++) {
+      const m = MIRRORS[(Math.random() * MIRRORS.length) | 0];
+      M.sparks.push({ d, a: Math.random() * TAU, r: Math.hypot(m.x, m.y), t: now + Math.random() * 0.04, max: .28 + Math.random() * .22, s: (soft ? .55 : 1) * (0.7 + Math.random() * .6) });
+    }
+  }
+}
+let curDir = 1;
+function updateMotion(now, dt) {
+  const K = S.K;
+  // tempo drive: garba speeds up, so does the spin
+  const tempo = clamp((B.bpm - 80) / 70, 0, 1.6);
+  const target = 0.55 + 1.0 * tempo * tempo;   // steady base spin from tempo only
+  M.spd = lerp(M.spd, target, clamp(dt * 0.8, 0, 1));
+  let dirS = M.dir; M.dip = 0;
+  if (M.rev) {
+    const k = clamp((now - M.rev.t0) / M.rev.dur, 0, 1);
+    dirS = lerp(M.rev.from, M.rev.to, easeIO(k)); M.dip = Math.sin(Math.PI * k);
+    if (k >= 1) { M.dir = M.rev.to; M.rev = null; dirS = M.dir; }
+  }
+  curDir = dirS;
+  const kick = beatEnv(now, 0) * K;
+  // spin surge after each drum hit, decaying
+  const since = now - B.beats[0].t, surge = since >= 0 ? Math.exp(-since * 4) : 0;
+  M.ang += (M.spd + 1.4 * K * surge) * dirS * dt;
+  const ft = clamp(0.3 + 0.75 * kick, 0, 1.3) * (1 - 0.75 * M.dip);   // flare only from drum hits
+  M.flare = lerp(M.flare, ft, clamp(dt * (ft > M.flare ? 14 : 3.5), 0, 1));
+}
+
+/* ------------------------------------------------------------------ draw */
+function drawDancer(g, d, now) {
+  const p = P(), K = S.K, geo = SP.geo, R = geo.R;
+  const t = now - d.delay;
+  const flare = M.flare, scale = d.R * (0.86 + 0.17 * flare) * (1 - 0.05 * M.dip);
+  const s0 = scale / R;
+  const ang = M.ang * d.dir + d.ph, dirW = curDir * d.dir;
+  // shadow
+  g.globalAlpha = 0.9; const ss = scale * 2.5; g.drawImage(SP.shadow, d.cx - ss / 2, d.cy - ss / 2 + scale * .04, ss, ss);
+  // soft gold halo on the kick (local, not a strobe)
+  const e = beatEnv(t, 0) * K;
+  if (e > 0.02) { g.globalCompositeOperation = 'lighter'; g.globalAlpha = 0.16 * e; const hs = scale * 2.6; g.drawImage(SP.glowGold, d.cx - hs / 2, d.cy - hs / 2, hs, hs); g.globalCompositeOperation = 'source-over'; }
+  g.globalAlpha = 1;
+  // inner panels
+  const step = TAU / N;
+  for (let i = 0; i < N; i++) {
+    const a = ang + i * step, ca = Math.cos(a) * s0, sa = Math.sin(a) * s0;
+    g.setTransform(ca, sa, -sa, ca, d.cx, d.cy);
+    g.drawImage(SP.inner[i & 3], 0, -geo.hh);
+  }
+  // outer hem panels: pleat wave + kick ripples
+  const bumps = d._b || (d._b = new Float32Array(N));
+  const wave = 0.035 * flare;
+  for (let i = 0; i < N; i++) {
+    const a = ang + i * step;
+    let b = wave * Math.sin(4 * a - t * 5 * dirW) + 0.012 * Math.sin(i * Math.PI);
+    let lit = 0;
+    for (const rp of M.ripples) {
+      const age = t - rp.t; if (age < 0 || age > 1.0) continue;
+      const front = age * Math.PI / 0.5, dd = Math.abs(wrapPI(a - rp.a + (d.dir < 0 ? Math.PI : 0)));
+      const z = (dd - front) / 0.38, amp = (1 - age) * Math.exp(-z * z);
+      b += 0.075 * K * amp; lit = Math.max(lit, amp);
+    }
+    // passing glint: mirrors catch a fixed stage light as they turn through it
+    const gl = Math.cos(a - (-2.3)); const glint = gl > 0 ? Math.pow(gl, 18) : 0;
+    bumps[i] = b; const ca2 = now - (M.clapT || -9); const clapE = 0 && ca2 < 0.25 ? (1 - ca2 / 0.25) * (M.clapK || 0) * (0.5 + 0.5 * Math.sin(i * 2.4 + M.clapT * 7)) : 0;
+    d['l' + i] = Math.min(1, lit * 1.1 + glint * 0.55 + 0.2 * e + 0.6 * clapE);
+  }
+  for (let i = 0; i < N; i++) {
+    const a = ang + i * step, s = s0 * (1 + bumps[i] * (1 - 0.6 * M.dip)), ca = Math.cos(a) * s, sa = Math.sin(a) * s;
+    g.setTransform(ca, sa, -sa, ca, d.cx, d.cy);
+    g.drawImage(SP.outer[i & 3], geo.xo0, -geo.hh);
+  }
+  g.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < N; i++) {
+    const l = d['l' + i]; if (l < 0.03) continue;
+    const a = ang + i * step, s = s0 * (1 + bumps[i] * (1 - 0.6 * M.dip)), ca = Math.cos(a) * s, sa = Math.sin(a) * s;
+    g.setTransform(ca, sa, -sa, ca, d.cx, d.cy); g.globalAlpha = l;
+    g.drawImage(SP.lit, geo.xo0, -geo.hh);
+  }
+  g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+  // waist
+  const wa = ang * 0.6, ws = s0 * (1 + 0.03 * e);
+  g.setTransform(Math.cos(wa) * ws, Math.sin(wa) * ws, -Math.sin(wa) * ws, Math.cos(wa) * ws, d.cx, d.cy);
+  g.drawImage(SP.waist, -SP.waist.width / 2, -SP.waist.height / 2);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+}
+function drawSparks(g, now) {
+  g.globalCompositeOperation = 'lighter';
+  const out = [];
+  for (const s of M.sparks) {
+    const age = now - s.t; if (age > s.max) continue; out.push(s); if (age < 0) continue;
+    const d = s.d, scale = d.R * (0.86 + 0.17 * M.flare), k = age / s.max;
+    const a = s.a + M.ang * d.dir, x = d.cx + Math.cos(a) * s.r * scale, y = d.cy + Math.sin(a) * s.r * scale;
+    const z = d.R * 0.09 * s.s * (k < .2 ? k / .2 : 1 - (k - .2) / .8);
+    g.globalAlpha = 0.95; g.drawImage(SP.star, x - z, y - z, z * 2, z * 2);
+  }
+  M.sparks = out; g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+}
+
+/* ----------------------------------------------------------------- state */
+const S = { K: 1 };
+function rebuild() {
+  W = innerWidth; H = innerHeight; U = Math.min(H, W * 0.75) / 1000;
+  CV.width = W; CV.height = H;
+  layout(); buildSkirtSprites(); buildBg();
+}
+CV.addEventListener('contextrestored', () => rebuild());
+addEventListener('resize', () => { clearTimeout(rebuild.t); rebuild.t = setTimeout(rebuild, 150); });
+
+/* ------------------------------------------------------------------ keys */
+let hudOn = Q.get('hud') === '1';
+addEventListener('keydown', (ev) => {
+  const k = ev.key, now = performance.now() / 1000;
+  if (!started && (k === ' ' || k === 'Enter')) { begin(); ev.preventDefault(); return; }
+  if (k === 'p' || k === 'P') { palIdx = (palIdx + 1) % PALS.length; buildSkirtSprites(); buildBg(); }
+  else if (k === 'f' || k === 'F') toggleFS();
+  else if (k === 't' || k === 'T') tap(now);
+  else if (k === 'h' || k === 'H') hudOn = !hudOn;
+  else if (k === 'l' || k === 'L') $('logo').classList.toggle('on');
+  else if (k === 'i' || k === 'I') nextInput();
+  else if (k === 'ArrowUp') S.K = Math.min(1.8, S.K + .15);
+  else if (k === 'ArrowDown') S.K = Math.max(.3, S.K - .15);
+  else return;
+  ev.preventDefault();
+});
+function toggleFS() { if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {}); else document.exitFullscreen(); }
+let started = false;
+function begin() {
+  if (started) return; started = true; $('start').classList.add('gone'); document.body.classList.add('run');
+  if (DEMO) { if (ac) ac.resume(); return; }
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
+  startMic();
+}
+$('start').addEventListener('click', begin);
+addEventListener('click', () => { if (ac && ac.state !== 'running') ac.resume(); });
+
+/* ------------------------------------------------------------------ loop */
+let last = performance.now() / 1000, hudN = 0;
+window.__ft = [];
+function frame() {
+  const now = performance.now() / 1000, dt = clamp(now - last, 0, 0.1);
+  window.__ft.push((now - last) * 1000); if (window.__ft.length > 1200) window.__ft.shift();
+  last = now;
+  analyse(now, dt); clock(now); updateMotion(now, dt);
+  const g = G;
+  g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+  g.drawImage(SP.bg, 0, 0);
+  for (const d of DANCERS) drawDancer(g, d, now);
+  if (hudOn && (hudN++ % 6 === 0)) {
+    const ft = window.__ft.slice(-120), avg = ft.reduce((a, b) => a + b, 0) / ft.length;
+    $('hud').style.display = 'block';
+    $('hud').textContent = `bpm     ${B.bpm.toFixed(1)}  src ${B.src}  beat ${B.count}  next flip ${16 - (B.count % 16)}\nkick    ${bar(LV.lowN)}\ntaali   ${B.claps} (HUD only)\nenergy  ${bar(LV.energy)}\nspin    ${(M.spd * curDir).toFixed(2)} rad/s  flare ${M.flare.toFixed(2)}\npalette ${P().name}   intensity ${S.K.toFixed(2)}\naudio   ${audioNote}\nsize    ${W}x${H}  ${DANCERS.length} dancer(s)  ${avg.toFixed(1)} ms`;
+  } else if (!hudOn) $('hud').style.display = 'none';
+  requestAnimationFrame(frame);
+}
+function bar(v) { const n = Math.round(clamp(v, 0, 1) * 20); return '#'.repeat(n) + '.'.repeat(20 - n) + ' ' + v.toFixed(2); }
+
+if (Q.get('pal')) palIdx = clamp(parseInt(Q.get('pal')) || 0, 0, 3);
+rebuild();
+B.next = performance.now() / 1000 + 0.3;
+if (DEMO) { started = true; $('start').classList.add('gone'); startDemo(); }
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

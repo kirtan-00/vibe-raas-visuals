@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bandhani Tunnel</title>
+<style>
+  html,body{margin:0;height:100%;background:#1c0104;overflow:hidden}
+  body.run{cursor:none}
+  canvas{position:fixed;left:0;top:0;width:100vw;height:100vh;display:block}
+  #logo{position:fixed;right:2.4vmin;bottom:2.4vmin;height:9vmin;opacity:0;transition:opacity .8s;pointer-events:none;z-index:5}
+  #logo.on{opacity:.92}
+  #hud{position:fixed;left:12px;top:12px;font:12px/1.55 Menlo,ui-monospace,monospace;color:#f6e7c8;background:rgba(24,3,6,.82);padding:10px 14px;border:1px solid rgba(233,199,131,.45);display:none;z-index:6;white-space:pre}
+  #start{position:fixed;inset:0;z-index:7;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2.2vmin;
+    background:rgba(28,1,4,.72);color:#f6e7c8;font-family:Georgia,'Times New Roman',serif;cursor:pointer;text-align:center}
+  #start h1{margin:0;font-weight:400;font-size:6vmin;letter-spacing:.02em;color:#e9c783}
+  #start p{margin:0;font-size:2.2vmin;opacity:.8;max-width:70vmin;line-height:1.5}
+  #start .k{font-family:Menlo,monospace;font-size:1.6vmin;opacity:.55}
+  #start.gone{display:none}
+  #err{position:fixed;inset:0;display:none;align-items:center;justify-content:center;color:#e9c783;font:3vmin Georgia,serif;z-index:8}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<img id="logo" src="assets/logo_gold.png" alt="">
+<div id="hud"></div>
+<div id="err">WebGL2 is not available in this browser. Use Chrome.</div>
+<div id="start">
+  <h1>Click to begin</h1>
+  <p>Allow the microphone so the tunnel follows the dhol and the taali. No mic? It keeps its own beat at 128.</p>
+  <p class="k">T tap &middot; P palette &middot; I input &middot; L logo &middot; F fullscreen &middot; H info &middot; Up/Down intensity</p>
+</div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const Q = new URLSearchParams(location.search);
+const DEMO = Q.get('demo') === '1';
+const TAU = Math.PI * 2;
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+/* --------------------------------------------------------------- palettes */
+// dark, deep, main, gold, cream, accent(marigold)
+const PALS = [
+  { name: 'Kumkum', dark: '#1c0104', deep: '#3a0309', main: '#8e0f1c', gold: '#e9c783', cream: '#f6e7c8', acc: '#f08a12' },
+  { name: 'Haldi',  dark: '#2a0902', deep: '#6a2204', main: '#c4560c', gold: '#f6c33a', cream: '#fff3cf', acc: '#b8231a' },
+  { name: 'Mor',    dark: '#021a1d', deep: '#063238', main: '#0d6964', gold: '#d9b45a', cream: '#eef0d6', acc: '#f08a12' },
+  { name: 'Raat',   dark: '#05061a', deep: '#0f1238', main: '#262c6e', gold: '#e5c06a', cream: '#f3e6c4', acc: '#e8892a' },
+];
+let palIdx = clamp(parseInt(Q.get('pal')) || 0, 0, PALS.length - 1);
+const P = () => PALS[palIdx];
+const hex3 = h => { const n = parseInt(h.slice(1), 16); return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255]; };
+
+/* ------------------------------------------------------------------ beat */
+const B = { bpm: 128, period: 60 / 128, count: 0, next: 0, lastBeat: -99, lastOnset: -99, onsets: [], taps: [], src: 'auto', claps: 0, lastClap: -99 };
+function setBpm(bpm) { B.bpm = clamp(bpm, 60, 200); B.period = 60 / B.bpm; }
+function fireBeat(t) { B.count++; B.lastBeat = t; onBeat(t); }
+
+/* ----------------------------------------------------------------- audio */
+let ac = null, analyser = null, fd = null, prevMag = null, micStream = null, srcNode = null, devices = [], devIdx = -1, audioNote = 'none';
+const LV = { pkA: .05, energy: 0, lowN: 0, pkL: .02, kF: [], cF: [], pkKF: .01, pkCF: .01, clapN: 0 };
+function initCtx() {
+  if (ac) return;
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+  analyser = ac.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.15;
+  analyser.minDecibels = -95; analyser.maxDecibels = -15;
+  fd = new Uint8Array(analyser.frequencyBinCount); prevMag = new Float32Array(analyser.frequencyBinCount);
+  const sink = ac.createGain(); sink.gain.value = 0; analyser.connect(sink); sink.connect(ac.destination);
+}
+async function startMic(deviceId) {
+  initCtx(); try { await ac.resume(); } catch (e) {}
+  try {
+    const c = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+    if (deviceId) c.deviceId = { exact: deviceId };
+    const s = await navigator.mediaDevices.getUserMedia({ audio: c });
+    if (srcNode) srcNode.disconnect();
+    if (micStream) micStream.getTracks().forEach(t => t.stop());
+    micStream = s; srcNode = ac.createMediaStreamSource(s); srcNode.connect(analyser);
+    audioNote = 'mic: ' + (s.getAudioTracks()[0].label || 'input');
+    try { devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput'); } catch (e) {}
+  } catch (e) { audioNote = 'no mic (' + e.name + '), auto beat'; }
+}
+async function nextInput() {
+  if (!devices.length) { await startMic(); return; }
+  devIdx = (devIdx + 1) % devices.length; await startMic(devices[devIdx].deviceId);
+}
+function startDemo() {
+  initCtx(); ac.resume().catch(() => {});
+  audioNote = 'demo track 128 BPM';
+  const out = ac.createGain(); out.gain.value = 0.9; out.connect(analyser);
+  const nb = ac.createBuffer(1, ac.sampleRate * 0.3, ac.sampleRate), nd = nb.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  const per = 60 / 128; let t0 = ac.currentTime + 0.2, k = 0;
+  function kick(t) {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.14);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(1, t + 0.004); g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.35);
+  }
+  function hat(t, lvl) {
+    const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    s.buffer = nb; f.type = 'highpass'; f.frequency.value = 7000;
+    g.gain.setValueAtTime(lvl, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+    s.connect(f); f.connect(g); g.connect(out); s.start(t); s.stop(t + 0.08);
+  }
+  function clap(t) {
+    const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    s.buffer = nb; f.type = 'bandpass'; f.frequency.value = 2400; f.Q.value = 0.9;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(1.6, t + 0.003); g.gain.exponentialRampToValueAtTime(0.4, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(1.4, t + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
+    s.connect(f); f.connect(g); g.connect(out); s.start(t); s.stop(t + 0.16);
+  }
+  function tone(t) {
+    const o = ac.createOscillator(), g = ac.createGain(); o.type = 'triangle'; o.frequency.value = 440 + 110 * (k % 3);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.2, t + 0.01); g.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.3);
+  }
+  setInterval(() => {
+    while (t0 < ac.currentTime + 0.15) {
+      kick(t0); hat(t0 + per / 2, 0.3); hat(t0 + per / 4, 0.1);
+      if (k % 2 === 1) clap(t0 + per * 0.5);
+      if (k % 2) tone(t0 + per * 0.75);
+      t0 += per; k++;
+    }
+  }, 25);
+}
+function bins(lo, hi) { const hz = ac.sampleRate / analyser.fftSize; return [Math.max(1, Math.floor(lo / hz)), Math.min(fd.length - 1, Math.ceil(hi / hz))]; }
+let KB = null, CB = null;
+function stats(arr) { let m = 0; for (const f of arr) m += f; m /= arr.length; let v = 0; for (const f of arr) v += (f - m) * (f - m); return [m, Math.sqrt(v / arr.length)]; }
+function analyse(now, dt) {
+  if (!analyser || ac.state !== 'running' || (!srcNode && !DEMO)) { LV.energy = lerp(LV.energy, 0.35, dt); return; }
+  analyser.getByteFrequencyData(fd);
+  if (!KB) { KB = bins(40, 150); CB = bins(1500, 4000); }
+  // spectral flux per band (positive bin differences), plus band level
+  let kf = 0, cf = 0, low = 0, all = 0;
+  for (let i = 1; i < fd.length; i++) {
+    const m = fd[i] / 255, d = m - prevMag[i]; prevMag[i] = m;
+    if (i < 700) all += m * m;
+    if (i >= KB[0] && i <= KB[1]) { low += m * m; if (d > 0) kf += d; }
+    else if (i >= CB[0] && i <= CB[1]) { if (d > 0) cf += d; }
+  }
+  low /= (KB[1] - KB[0] + 1); kf /= (KB[1] - KB[0] + 1); cf /= (CB[1] - CB[0] + 1); all /= 700;
+  LV.pkA = Math.max(all, LV.pkA * 0.9993, 0.002); LV.pkL = Math.max(low, LV.pkL * 0.9993, 0.004);
+  LV.lowN = low / LV.pkL;
+  const a = all / LV.pkA; LV.energy = a > LV.energy ? lerp(LV.energy, a, .25) : lerp(LV.energy, a, .03);
+  LV.pkKF = Math.max(kf, LV.pkKF * 0.9995, 0.005); LV.pkCF = Math.max(cf, LV.pkCF * 0.9995, 0.003);
+  const kn = kf / LV.pkKF, cn = cf / LV.pkCF;
+  LV.kF.push(kn); if (LV.kF.length > 45) LV.kF.shift();
+  LV.cF.push(cn); if (LV.cF.length > 45) LV.cF.shift();
+  const [km, ks] = stats(LV.kF), [cm, cs] = stats(LV.cF);
+  if (kn > km + 1.5 * ks + 0.12 && LV.lowN > 0.35 && low > 0.002 && now - B.lastOnset > 0.24) onset(now);
+  if (cn > cm + 1.8 * cs + 0.15 && cf > 0.004 && now - B.lastClap > 0.13) { B.lastClap = now; B.claps++; }
+}
+function onset(now) {
+  const ioi = now - B.lastOnset; B.lastOnset = now;
+  if (ioi > 0.24 && ioi < 1.5) {
+    B.onsets.push(ioi); if (B.onsets.length > 10) B.onsets.shift();
+    if (B.onsets.length >= 4) {
+      const f = B.onsets.map(x => { let bpm = 60 / x; while (bpm < 92) bpm *= 2; while (bpm > 184) bpm /= 2; return bpm; }).sort((p, q) => p - q);
+      setBpm(lerp(B.bpm, f[f.length >> 1], .3));
+    }
+  }
+  B.src = 'audio';
+  fireBeat(now); B.next = now + B.period;
+}
+function clock(now) {
+  if (now - B.lastOnset < 2.2) return;
+  B.src = B.taps.length >= 2 ? 'tap' : 'auto';
+  if (now >= B.next) { if (now - B.next > B.period) B.next = now; fireBeat(B.next); B.next += B.period; }
+}
+function tap(now) {
+  if (B.taps.length && now - B.taps[B.taps.length - 1] > 2.5) B.taps = [];
+  B.taps.push(now); if (B.taps.length > 6) B.taps.shift();
+  if (B.taps.length >= 2) { const iv = (B.taps[B.taps.length - 1] - B.taps[0]) / (B.taps.length - 1); setBpm(60 / iv); }
+  B.lastOnset = -99; fireBeat(now); B.next = now + B.period;
+}
+
+/* ------------------------------------------------------------ tunnel state */
+const T = { travel: 0, spin: 0, dir: 1, dirS: 1, twist: 0, rings: [], clapT: -99, clapA: 0, K: 1 };
+const RINGS = 8;
+function onBeat(t) {
+  T.rings.push({ t, a: 0 }); if (T.rings.length > RINGS) T.rings.shift();
+  if (B.count % 16 === 0) T.dir = -T.dir;
+}
+function onClap(t) { T.clapT = t; T.clapA = Math.random() * TAU; }
+// camera punch: ~50ms attack, ~350ms eased decay
+function punchEnv(dt) {
+  if (dt < 0) return 0;
+  if (dt < 0.05) { const x = dt / 0.05; return 1 - (1 - x) * (1 - x); }
+  const d = (dt - 0.05) / 0.35; if (d >= 1) return 0;
+  const y = 1 - d; return y * y * (3 - 2 * y);
+}
+
+/* ------------------------------------------------------------------ webgl */
+const cv = $('c');
+const gl = cv.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
+const VS = `#version 300 es
+in vec2 p; void main(){ gl_Position = vec4(p, 0.0, 1.0); }`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 uRes;
+uniform float uTime, uTravel, uSpin, uTwist, uPunch, uEnergy, uBeat, uClapAge, uClapA, uK, uMaxLR;
+uniform float uRingLR[${RINGS}];
+uniform float uRingA[${RINGS}];
+uniform vec3 cDark, cDeep, cMain, cGold, cCream, cAcc;
+out vec4 o;
+#define TAU 6.28318531
+const float N = 30.0;
+
+float disc(vec2 q, float rad, float aa){ return 1.0 - smoothstep(rad - aa, rad + aa, length(q)); }
+float hash(float n){ return fract(sin(n * 91.345) * 47453.5453); }
+
+// a bandhani dot: dyed-resist dot with a tiny tied centre
+vec3 bdot(vec3 base, vec2 q, float rad, vec3 dc, float aa){
+  float d = disc(q, rad, aa);
+  float eye = disc(q, rad * 0.36, aa);
+  base = mix(base, dc, d);
+  base = mix(base, mix(dc, cDeep, 0.55), eye * d);
+  return base;
+}
+
+void main(){
+  vec2 p = (gl_FragCoord.xy - 0.5 * uRes) / (0.5 * uRes.y);
+  p /= (1.0 + 0.085 * uPunch);
+  float r = max(length(p), 1e-4);
+  float a = atan(p.y, p.x);
+  float lr = log(r);
+  float v = -lr * N / TAU + uTravel + 0.6 * uPunch;
+  float tw = uTwist * (-lr + 1.0);
+  float s = (a + uSpin + tw) / TAU * N;
+  float row = floor(v);
+  float fv = fract(v);
+  float rm = mod(row, 6.0);
+  float odd = mod(row, 2.0);
+  float so = s + 0.5 * odd;
+  float col = floor(so);
+  vec2 q = vec2(fract(so) - 0.5, fv - 0.5);
+  float aa = max(fwidth(v), 1e-4) * 0.9;
+  float beat = uBeat * uK;
+
+  // band background: kumkum field, maroon for mirror and bead rows
+  vec3 base = (rm == 0.0 || rm == 3.0) ? cDeep : cMain;
+  vec3 c = base;
+  vec3 avg = base;
+
+  if (rm == 0.0) {
+    // gold bead line: thread + big beads alternating gold and marigold, small cream beads between
+    float th = 1.0 - smoothstep(0.035 - aa, 0.035 + aa, abs(q.y));
+    c = mix(c, cGold * 0.8, th);
+    vec3 bc = mod(col, 2.0) == 0.0 ? cGold : cAcc;
+    float b1 = disc(q, 0.2, aa);
+    c = mix(c, bc * (0.75 + 0.25 * beat), b1);
+    c = mix(c, cDeep, disc(q, 0.07, aa) * b1);
+    avg = mix(base, cGold, 0.3);
+  } else if (rm == 3.0) {
+    // abhla mirror row
+    float cid = col + 0.5 - 0.5 * odd;
+    float ca = cid / N * TAU - uSpin - tw;
+    float da = mod(ca - uClapA, TAU);
+    float front = uClapAge / 0.32 * TAU;
+    float fl = (da < front) ? exp(-(front - da) * 1.1) : 0.0;
+    fl *= exp(-uClapAge * 2.2) * step(0.0, uClapAge);
+    float rr = length(q);
+    // petal ring of tiny gold beads around the mirror
+    float pa = atan(q.y, q.x);
+    float pk = abs(fract(pa / TAU * 10.0) - 0.5);
+    float rim = disc(q, 0.34, aa);
+    c = mix(c, cGold, rim);
+    float m = disc(q, 0.27, aa);
+    // dark silver mirror catching a slow highlight
+    vec3 mirror = mix(cMain, mix(cGold, cCream, 0.4), clamp(fl * 1.1 + 0.2 * beat, 0.0, 1.0));
+    c = mix(c, mirror, m);
+    c = mix(c, cGold, disc(q, 0.1, aa) * (1.0 - fl));
+    c += cGold * fl * 0.35 * disc(q, 0.48, 0.12);
+    avg = mix(base, cGold, 0.35 + 0.4 * fl);
+  } else {
+    // bandhani: alternating 4-dot and 9-dot clusters
+    bool nine = mod(col + floor(row * 0.5), 2.0) == 0.0;
+    vec3 dc = nine ? cCream : cGold;
+    dc *= 0.85 + 0.25 * beat;
+    if (nine) {
+      vec2 qr = mat2(0.7071, 0.7071, -0.7071, 0.7071) * q;
+      vec2 g = clamp(floor(qr / 0.16 + 0.5), -1.0, 1.0);
+      vec2 l = qr - g * 0.16;
+      c = bdot(c, l, 0.058, dc, aa);
+      // marigold heart on some clusters
+    } else {
+      vec2 l = vec2(abs(q.x), abs(q.y));
+      l = (l.x > l.y) ? vec2(l.x - 0.2, l.y) : vec2(l.x, l.y - 0.2);
+      c = bdot(c, l, 0.085, dc, aa);
+    }
+    avg = mix(base, dc, 0.22);
+  }
+  // fine gold seam between rows
+  float seam = 1.0 - smoothstep(0.0, 0.02 + aa, min(fv, 1.0 - fv));
+  if (rm == 0.0 || rm == 3.0) c = mix(c, cGold * 0.6, seam * 0.5);
+
+  // collapse detail before it aliases
+  float px = 1.0 / aa;
+  c = mix(avg, c, smoothstep(2.5, 7.0, px));
+
+  // depth: darker down the throat, then the glowing centre
+  float depth = smoothstep(0.02, 0.9, r);
+  c = mix(cDark, c, 0.35 + 0.65 * depth);
+
+  // kick rings rushing toward the viewer
+  float lit = 0.0;
+  vec3 add = vec3(0.0);
+  for (int i = 0; i < ${RINGS}; i++) {
+    float A = uRingA[i];
+    if (A <= 0.0) continue;
+    float d = lr - uRingLR[i];
+    float core = exp(-d * d / 0.0016);
+    float halo = exp(-d * d / 0.02);
+    c = mix(c, cGold * 1.05, min(1.0, core * A * uK));
+    add += cGold * halo * 0.16 * A;
+    lit += halo * A;
+  }
+  c *= 1.0 + 0.3 * lit * uK;
+  c += add * uK;
+
+  // centre glow, energy driven
+  float e = 0.5 + 0.9 * uEnergy;
+  c = mix(c, cMain * 0.9 + cGold * 0.15, exp(-r * 9.0) * (0.55 + 0.25 * e));
+  c += cGold * exp(-r * 4.0) * 0.06 * e;
+
+  // soft edge vignette (relative to the screen, not the tunnel)
+  vec2 sp = gl_FragCoord.xy / uRes - 0.5;
+  float vg = 1.0 - 0.35 * smoothstep(0.25, 0.75, length(sp * vec2(1.0, 0.8)));
+  c *= vg;
+
+  o = vec4(min(c, vec3(1.0)), 1.0);
+}`;
+
+let prog = null, U = {}, vao = null;
+function compile(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+function initGL() {
+  prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+  gl.bindAttribLocation(prog, 0, 'p'); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+  vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  for (const n of ['uRes', 'uTime', 'uTravel', 'uSpin', 'uTwist', 'uPunch', 'uEnergy', 'uBeat', 'uClapAge', 'uClapA', 'uK', 'uMaxLR', 'uRingLR', 'uRingA', 'cDark', 'cDeep', 'cMain', 'cGold', 'cCream', 'cAcc'])
+    U[n] = gl.getUniformLocation(prog, n);
+  setPal();
+}
+function setPal() {
+  const p = P();
+  gl.useProgram(prog);
+  gl.uniform3fv(U.cDark, hex3(p.dark)); gl.uniform3fv(U.cDeep, hex3(p.deep)); gl.uniform3fv(U.cMain, hex3(p.main));
+  gl.uniform3fv(U.cGold, hex3(p.gold)); gl.uniform3fv(U.cCream, hex3(p.cream)); gl.uniform3fv(U.cAcc, hex3(p.acc));
+  document.body.style.background = p.dark;
+}
+const SCALE = clamp(parseFloat(Q.get('scale')) || 1, 0.25, 2);
+let W = 0, H = 0;
+function resize() {
+  W = Math.max(1, Math.round(innerWidth * SCALE)); H = Math.max(1, Math.round(innerHeight * SCALE));
+  cv.width = W; cv.height = H; gl.viewport(0, 0, W, H);
+}
+addEventListener('resize', resize);
+cv.addEventListener('webglcontextlost', e => e.preventDefault());
+cv.addEventListener('webglcontextrestored', () => { initGL(); resize(); });
+
+const ringLR = new Float32Array(RINGS), ringA = new Float32Array(RINGS);
+function render(now, dt) {
+  // tunnel speed follows tempo and energy
+  // steady base speed; only drum onsets add a surge that decays after each hit
+  const surge = punchEnv(now - B.lastBeat) * 4.0 * T.K;
+  const sp = 1.8 * (B.bpm / 128) + surge;
+  T.travel += sp * dt;
+  T.dirS = lerp(T.dirS, T.dir, 1 - Math.exp(-dt * 1.6));
+  T.spin += T.dirS * 0.16 * dt;
+  T.twist = 0.12;
+  if (T.travel > 6000) T.travel -= 6000;
+  if (T.spin > 1000 * TAU) T.spin -= 1000 * TAU;
+  const pu = punchEnv(now - B.lastBeat) * Math.min(1.4, T.K);
+  const bt = punchEnv(now - B.lastBeat);
+  // rings: start near the centre, accelerate outward past the screen corner
+  const maxLR = Math.log(Math.hypot(W, H) / H * 1.05);
+  const lr0 = Math.log(0.025), DUR = 0.7;
+  for (let i = 0; i < RINGS; i++) {
+    const rg = T.rings[i];
+    if (!rg) { ringA[i] = 0; ringLR[i] = -20; continue; }
+    const age = now - rg.t, k = age / DUR;
+    if (age < 0 || k > 1.2) { ringA[i] = 0; ringLR[i] = -20; continue; }
+    ringLR[i] = lr0 + (maxLR + 0.35 - lr0) * Math.pow(k, 1.6);
+    ringA[i] = Math.min(1, age / 0.04) * (k > 0.85 ? Math.max(0, 1 - (k - 0.85) / 0.35) : 1);
+  }
+  gl.useProgram(prog);
+  gl.uniform2f(U.uRes, W, H); gl.uniform1f(U.uTime, now % 1000);
+  gl.uniform1f(U.uTravel, T.travel); gl.uniform1f(U.uSpin, T.spin); gl.uniform1f(U.uTwist, T.twist);
+  gl.uniform1f(U.uPunch, pu); gl.uniform1f(U.uEnergy, 0.4); gl.uniform1f(U.uBeat, bt);
+  gl.uniform1f(U.uClapAge, now - T.clapT); gl.uniform1f(U.uClapA, T.clapA); gl.uniform1f(U.uK, T.K); gl.uniform1f(U.uMaxLR, maxLR);
+  gl.uniform1fv(U.uRingLR, ringLR); gl.uniform1fv(U.uRingA, ringA);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+/* ------------------------------------------------------------------ keys */
+let hudOn = Q.get('hud') === '1';
+addEventListener('keydown', (ev) => {
+  const k = ev.key, now = performance.now() / 1000;
+  if (!started && (k === ' ' || k === 'Enter')) { begin(); ev.preventDefault(); return; }
+  if (k === 'p' || k === 'P') { palIdx = (palIdx + 1) % PALS.length; setPal(); }
+  else if (k === 'f' || k === 'F') toggleFS();
+  else if (k === 't' || k === 'T') tap(now);
+  else if (k === 'h' || k === 'H') hudOn = !hudOn;
+  else if (k === 'l' || k === 'L') $('logo').classList.toggle('on');
+  else if (k === 'i' || k === 'I') nextInput();
+  else if (k === 'ArrowUp') T.K = Math.min(1.8, T.K + .15);
+  else if (k === 'ArrowDown') T.K = Math.max(.3, T.K - .15);
+  else return;
+  ev.preventDefault();
+});
+function toggleFS() { if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {}); else document.exitFullscreen(); }
+let started = false;
+function begin() {
+  if (started) return; started = true; $('start').classList.add('gone'); document.body.classList.add('run');
+  if (DEMO) { if (ac) ac.resume(); return; }
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
+  startMic();
+}
+$('start').addEventListener('click', begin);
+addEventListener('click', () => { if (ac && ac.state !== 'running') ac.resume(); });
+
+/* ------------------------------------------------------------------ loop */
+let last = performance.now() / 1000, hudN = 0;
+window.__ft = [];
+window.__state = () => ({ sinceBeat: performance.now() / 1000 - B.lastBeat, sinceClap: performance.now() / 1000 - T.clapT, beats: B.count, claps: B.claps, src: B.src, bpm: B.bpm, energy: LV.energy, audio: audioNote, ac: ac && ac.state });
+window.__bench = (n) => { const px = new Uint8Array(4); const t0 = performance.now(); for (let i = 0; i < n; i++) { render(performance.now() / 1000, 1 / 60); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); } return (performance.now() - t0) / n; };
+function frame() {
+  const now = performance.now() / 1000, dt = clamp(now - last, 0, 0.1);
+  window.__ft.push((now - last) * 1000); if (window.__ft.length > 1200) window.__ft.shift();
+  last = now;
+  analyse(now, dt); clock(now);
+  render(now, dt);
+  if (hudOn && (hudN++ % 6 === 0)) {
+    const ft = window.__ft.slice(-60), avg = ft.reduce((x, y) => x + y, 0) / ft.length;
+    $('hud').style.display = 'block';
+    $('hud').textContent = `bpm     ${B.bpm.toFixed(1)}  src ${B.src}  beat ${B.count}\nclaps   ${B.claps} (detected, not drawn)\nenergy  ${bar(LV.energy)}\nlow     ${bar(LV.lowN)}\nturn    ${T.dir > 0 ? 'clockwise' : 'anticlockwise'} (flips every 16)\npalette ${P().name}   intensity ${T.K.toFixed(2)}\naudio   ${audioNote}\nsize    ${W}x${H}  ${avg.toFixed(1)} ms/frame`;
+  } else if (!hudOn) $('hud').style.display = 'none';
+  requestAnimationFrame(frame);
+}
+function bar(v) { const n = Math.round(clamp(v, 0, 1) * 20); return '#'.repeat(n) + '.'.repeat(20 - n) + ' ' + v.toFixed(2); }
+
+if (!gl) { $('err').style.display = 'flex'; }
+else {
+  try { initGL(); } catch (e) { $('err').textContent = 'Shader error: ' + e.message; $('err').style.display = 'flex'; console.error(e); }
+  resize();
+  B.next = performance.now() / 1000 + 0.3;
+  if (DEMO) { started = true; $('start').classList.add('gone'); startDemo(); }
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>
