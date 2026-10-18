@@ -1,16 +1,35 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 220 1400 900" width="1400" height="900">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 940" width="1100" height="940">
  <defs>
-  <pattern id="teeth" width="128" height="260" patternUnits="userSpaceOnUse">
-   <rect width="128" height="260" fill="#111111"/>
-   <polygon points="46,0 112,0 66,260 0,260" fill="#FFFFFF"/>
+  <pattern id="teeth" width="120" height="100" patternUnits="userSpaceOnUse" patternTransform="translate(200 0)">
+   <rect width="120" height="100" fill="#111111"/>
+   <polygon points="30,0 90,0 60,100 0,100" fill="#FFFFFF"/>
   </pattern>
+  <clipPath id="body"><rect x="200" y="330" width="700" height="410" rx="26"/></clipPath>
  </defs>
- <g transform="translate(232 30) scale(0.88)">
-  <rect x="150" y="470" width="724" height="372" rx="34" fill="#FFFFFF"/>
-  <g transform="rotate(-16 214 432)">
-   <rect x="150" y="330" width="772" height="176" rx="26" fill="url(#teeth)" stroke="#FFFFFF" stroke-width="14"/>
-  </g>
-  <circle cx="214" cy="432" r="30" fill="#FFFFFF"/>
+ <!-- slate -->
+ <rect x="200" y="330" width="700" height="410" rx="26" fill="#111111"/>
+ <g clip-path="url(#body)">
+  <rect x="200" y="330" width="700" height="76" fill="url(#teeth)"/>
  </g>
- <text x="700" y="1050" text-anchor="middle" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-weight="700" font-size="250" letter-spacing="-5" fill="#FFFFFF">clapper.in</text>
+ <g stroke="#FFFFFF" stroke-width="6" fill="none">
+  <line x1="200" y1="406" x2="900" y2="406"/>
+  <line x1="200" y1="520" x2="900" y2="520"/>
+  <line x1="200" y1="630" x2="900" y2="630"/>
+  <line x1="433" y1="520" x2="433" y2="630"/>
+  <line x1="666" y1="520" x2="666" y2="630"/>
+ </g>
+ <g font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-weight="700" font-size="30" letter-spacing="3" fill="#FFFFFF">
+  <text x="224" y="446">PROD.</text>
+  <text x="224" y="556">ROLL</text>
+  <text x="457" y="556">SCENE</text>
+  <text x="690" y="556">TAKE</text>
+  <text x="224" y="666">DIRECTOR</text>
+ </g>
+ <rect x="200" y="330" width="700" height="410" rx="26" fill="none" stroke="#FFFFFF" stroke-width="12"/>
+ <!-- clapstick, hinged at the left -->
+ <g transform="rotate(-14 206 318)">
+  <rect x="200" y="238" width="700" height="80" rx="14" fill="url(#teeth)" stroke="#FFFFFF" stroke-width="12"/>
+ </g>
+ <circle cx="206" cy="318" r="16" fill="#111111" stroke="#FFFFFF" stroke-width="8"/>
+ <text x="550" y="900" text-anchor="middle" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-weight="700" font-size="175" letter-spacing="-4" fill="#FFFFFF">clapper.in</text>
 </svg>
