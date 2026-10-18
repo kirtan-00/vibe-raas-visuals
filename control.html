@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1c0104">
 <title>Vibe Raas Control</title>
 <style>
 @font-face{font-family:"Rozha";src:url(fonts/RozhaOne-Regular.ttf)}
@@ -32,18 +33,42 @@ select{font:inherit;font-size:16px;width:100%;min-height:52px;background:var(--d
 .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @media (max-width:640px){.two{grid-template-columns:1fr}}
 .hint{font-size:14px;color:var(--dim);line-height:1.5;margin-top:8px}
-#conn{font-size:13px;letter-spacing:.08em;color:var(--dim)}
-#conn.bad{color:#ff8a6a}
+#conn{font-size:13px;letter-spacing:.06em;color:var(--dim)}
+.pill{display:inline-block;font-size:13px;letter-spacing:.06em;padding:6px 12px;border-radius:99px;border:2px solid var(--dim);color:var(--dim);white-space:nowrap}
+.pill.net{border-color:#7fd08a;color:#a9f0b2}.pill.lan{border-color:var(--gold);color:var(--gold)}.pill.off{border-color:#ff8a6a;color:#ff8a6a}
+.meta{display:flex;flex-direction:column;gap:6px;align-items:flex-end}
+#room{font-size:13px;color:var(--dim);letter-spacing:.12em}
+#join{display:none;max-width:420px;margin:12vh auto 0;text-align:center}
+#join h1{font-family:"Rozha";font-weight:400;font-size:36px;color:var(--gold);margin-bottom:8px}
+#join p{color:var(--dim);font-size:15px;line-height:1.5;margin-bottom:18px}
+#code{font:inherit;font-size:44px;letter-spacing:.3em;text-align:center;text-transform:uppercase;width:100%;background:var(--bg);color:var(--cream);border:3px solid var(--gold);border-radius:14px;padding:12px 8px 12px 20px}
+#joinb{width:100%;margin-top:14px;font-size:22px;background:var(--red);border-color:var(--gold)}
+body.nojoin #join{display:block}body.nojoin .wrap{display:none}
+@media (max-width:640px){
+ body{padding:12px}
+ .top{gap:10px;padding:10px 12px}.top h1{font-size:22px;min-width:0;flex-basis:100%;order:-1}
+ #light{width:40px;height:40px}.stat b{font-size:24px}#lvl{width:80px}
+ .meta{flex:1}
+ .row{grid-template-columns:1fr 1fr}
+ #vis{grid-template-columns:1fr 1fr}
+ button{min-height:64px}
+ #tap{min-height:140px}
+}
 </style>
 </head>
 <body>
+<div id="join">
+ <h1>Vibe Raas Control</h1>
+ <p>Type the 4-letter code shown on the LED laptop's start screen.</p>
+ <form id="jf"><input id="code" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false" inputmode="text" placeholder="ABCD"><button id="joinb" type="submit">Connect</button></form>
+</div>
 <div class="wrap">
  <div class="top">
   <div id="light"></div>
   <h1>Vibe Raas Control</h1>
   <div class="stat">BPM<b id="bpm">--</b></div>
   <div class="stat">Input<div id="lvl"><i></i></div></div>
-  <div id="conn" class="bad">SHOW WINDOW NOT FOUND</div>
+  <div class="meta"><span class="pill off" id="pill">Offline</span><span id="conn">Waiting for show</span><span id="room"></span></div>
  </div>
  <section>
   <h2>Visual</h2>
@@ -70,20 +95,27 @@ select{font:inherit;font-size:16px;width:100%;min-height:52px;background:var(--d
    <div class="row" style="margin-top:10px">
     <button id="logo">Logo off</button><button id="fs">Fullscreen</button>
    </div>
-   <p class="hint">Fullscreen: click the SHOW window once, then press F (or double-click it). Browsers only allow it from that window.</p>
+   <p class="hint">Fullscreen: click the SHOW window once, then press F (or double-click it). Browsers only allow it from that window. Press Q on the show to see the pairing code again.</p>
   </section>
  </div>
  <section>
-  <h2>Audio input</h2>
+  <h2>Show laptop mic input</h2>
   <select id="dev"><option value="">Default input</option></select>
   <p class="hint" id="note">Mixer line out works best. Changing input reloads the visual.</p>
  </section>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script src="relay.js"></script>
 <script>
 'use strict';
-const ch = new BroadcastChannel('vibe-raas');
 const $ = id => document.getElementById(id);
-const send = m => ch.postMessage(m);
+const ROOM = VRRelay.clean(new URLSearchParams(location.search).get('room'));
+$('jf').onsubmit = e => { e.preventDefault(); const c = VRRelay.clean($('code').value); if (c.length >= 3) location.href = 'control.html?room=' + c; };
+if (ROOM.length < 3) { document.body.classList.add('nojoin'); setTimeout(() => $('code').focus(), 50); }
+const relay = ROOM.length >= 3 ? VRRelay({ room: ROOM, role: 'control', onMsg: (m, via) => onStatus(m, via) }) : null;
+const send = m => { if (relay) relay.send(m); };
+if (relay) { $('room').textContent = 'ROOM ' + ROOM; relay.onConn = up => { if (up) send({ type: 'ping' }); pillUpdate(); }; }
+let lastNet = 0, lastBc = 0, bpmNow = 0, beatAnchor = 0;
 let logoOn = false, lastSeen = 0, curV = '', curPal = '';
 const VISUALS = [
   { v: 'tunnel', name: 'Tunnel', path: 'tunnel/' }, { v: 'stripes', name: 'Stripes', path: 'stripes/' },
@@ -107,35 +139,53 @@ document.querySelectorAll('#pal button').forEach(b => b.onclick = () => { send({
 function mark(sel, attr, val) { document.querySelectorAll(sel + ' button').forEach(b => b.classList.toggle('sel', b.dataset[attr] === val)); }
 $('tap').addEventListener('pointerdown', e => { e.preventDefault(); send({ type: 'tap' }); flash(); });
 addEventListener('keydown', e => { if (e.key === ' ' || e.key === 't' || e.key === 'T') { e.preventDefault(); send({ type: 'tap' }); flash(); } });
-function flash() { $('light').classList.add('on'); setTimeout(() => $('light').classList.remove('on'), 90); }
-$('k').oninput = () => { $('kv').textContent = (+$('k').value).toFixed(2); send({ type: 'k', value: +$('k').value }); };
+let flashing = false;
+function flash() { flashing = true; $('light').classList.add('on'); setTimeout(() => { flashing = false; $('light').classList.remove('on'); }, 90); }
+let kTouched = 0;
+$('k').oninput = () => { kTouched = performance.now(); $('kv').textContent = (+$('k').value).toFixed(2); send({ type: 'k', value: +$('k').value }); };
 $('logo').onclick = () => { logoOn = !logoOn; send({ type: 'logo', on: logoOn }); $('logo').textContent = logoOn ? 'Logo on' : 'Logo off'; $('logo').classList.toggle('sel', logoOn); };
 $('fs').onclick = () => send({ type: 'fs' });
 $('dev').onchange = () => send({ type: 'input', id: $('dev').value, label: $('dev').selectedOptions[0] ? $('dev').selectedOptions[0].textContent : '' });
-async function listDevs() {
-  try {
-    let d = await navigator.mediaDevices.enumerateDevices();
-    if (d.some(x => x.kind === 'audioinput' && !x.label)) {
-      try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); s.getTracks().forEach(t => t.stop()); d = await navigator.mediaDevices.enumerateDevices(); } catch (e) {}
-    }
-    const sel = $('dev'), keep = sel.value; sel.innerHTML = '<option value="">Default input</option>';
-    d.filter(x => x.kind === 'audioinput' && x.deviceId !== 'default').forEach((x, i) => { const o = document.createElement('option'); o.value = x.deviceId; o.textContent = x.label || ('Input ' + (i + 1)); sel.appendChild(o); });
-    sel.value = keep;
-  } catch (e) {}
+let devKey = '';
+function showDevs(list, cur) {
+  const k = JSON.stringify(list || []) + '|' + (cur || ''); if (k === devKey) return; devKey = k;
+  const sel = $('dev'); sel.innerHTML = '<option value="">Default input</option>';
+  (list || []).forEach(x => { const o = document.createElement('option'); o.value = x.id; o.textContent = x.label; sel.appendChild(o); });
+  sel.value = cur || '';
 }
-listDevs(); if (navigator.mediaDevices) navigator.mediaDevices.addEventListener('devicechange', listDevs);
-ch.onmessage = ev => {
-  const m = ev.data; if (!m || m.type !== 'status') return;
-  lastSeen = performance.now();
-  $('conn').textContent = m.started ? 'SHOW LIVE' : 'SHOW OPEN, CLICK IT TO START'; $('conn').classList.toggle('bad', !m.started);
+function onStatus(m, via) {
+  if (m.type !== 'status') return;
+  const now = performance.now(); lastSeen = now;
+  if (via === 'mqtt') lastNet = now; else lastBc = now;
+  pillUpdate();
+  $('conn').textContent = m.started ? 'Show live' : 'Show open, click it to start';
+  bpmNow = m.bpm || 0; if (m.beatAge < 5000) beatAnchor = now - m.beatAge;
+  showDevs(m.devs, m.dev);
+  if (typeof m.logo === 'boolean' && m.logo !== logoOn) { logoOn = m.logo; $('logo').textContent = logoOn ? 'Logo on' : 'Logo off'; $('logo').classList.toggle('sel', logoOn); }
+  if (m.K && performance.now() - kTouched > 1500) { $('k').value = m.K; $('kv').textContent = (+m.K).toFixed(2); }
   $('bpm').textContent = m.bpm ? Math.round(m.bpm) : '--';
   $('lvl').firstChild.style.width = Math.round(m.level * 100) + '%';
-  $('light').classList.toggle('on', m.beatAge < 140);
+
   if (m.v !== curV) { curV = m.v; mark('#vis', 'v', m.v); }
   if (m.pal && m.pal !== curPal) { curPal = m.pal; mark('#pal', 'p', m.pal); }
   $('note').textContent = (m.audio || '') + '. Mixer line out works best. Changing input reloads the visual.';
-};
-setInterval(() => { if (performance.now() - lastSeen > 1500) { $('conn').textContent = 'SHOW WINDOW NOT FOUND'; $('conn').classList.add('bad'); } }, 500);
+}
+function pillUpdate() {
+  const now = performance.now(), p = $('pill');
+  let t = 'Offline', c = 'off';
+  if (now - lastBc < 2000) { t = 'Same laptop'; c = 'lan'; }
+  else if (now - lastNet < 2500) { t = 'Connected via internet'; c = 'net'; }
+  else if (relay && relay.mqttUp()) { t = 'Online, waiting for show'; c = 'off'; }
+  p.textContent = t; p.className = 'pill ' + c;
+}
+setInterval(() => { pillUpdate(); if (performance.now() - lastSeen > 2500) $('conn').textContent = ROOM ? 'Show not found in room ' + ROOM : ''; }, 500);
+// local beat light: phase-locked to the show's last beat + BPM (status arrives at ~4 Hz over the internet)
+(function beat() {
+  const now = performance.now(); let on = false;
+  if (bpmNow > 40 && beatAnchor && now - lastSeen < 2500) { const per = 60000 / bpmNow; const ph = ((now - beatAnchor) % per + per) % per; on = ph < 110; }
+  if (!flashing) $('light').classList.toggle('on', on);
+  requestAnimationFrame(beat);
+})();
 send({ type: 'ping' });
 </script>
 </body>

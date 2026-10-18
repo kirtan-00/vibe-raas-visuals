@@ -46,6 +46,11 @@
     var o = kObj();
     return { bpm: B.bpm, beats: B.count, energy: (typeof LV !== 'undefined' ? LV.energy : 0), pal: P().name, K: o ? o.K : 1 };
   };
+  // Q (pairing code) still works when the iframe has focus
+  addEventListener('keydown', function (e) {
+    if (!e.isTrusted) return;
+    if (e.key === 'q' || e.key === 'Q') { try { window.parent.__vrKey && window.parent.__vrKey(e.key); } catch (x) {} }
+  });
   addEventListener('pagehide', function () {
     try { if (srcNode) srcNode.disconnect(); } catch (e) {}
     try { if (analyser) analyser.disconnect(); } catch (e) {}

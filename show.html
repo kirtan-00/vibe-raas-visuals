@@ -11,12 +11,23 @@ iframe{position:fixed;inset:0;width:100%;height:100%;border:0;display:block;back
 #go{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#000;z-index:5;cursor:pointer}
 #go span{font:500 18px/1.4 system-ui,sans-serif;color:#e9c783;border:2px solid #e9c783;border-radius:10px;padding:14px 22px;letter-spacing:.06em}
 #go.gone{display:none}
+#go{flex-direction:column;gap:22px}
+.pair{display:flex;align-items:center;gap:22px;background:#140003;border:2px solid #b9895a;border-radius:14px;padding:16px 20px;color:#f6e7c8;font:500 15px/1.45 system-ui,sans-serif;max-width:92vw}
+.pair .qr{background:#fff;border-radius:8px;padding:6px;line-height:0}.pair .qr svg{width:170px;height:170px;display:block}
+.pair b{display:block;font-size:46px;letter-spacing:.18em;color:#e9c783;line-height:1.1;margin:2px 0 6px}
+.pair small{display:block;color:#b9895a;word-break:break-all;max-width:320px}
+#pairov{position:fixed;inset:0;z-index:6;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.82)}
+#pairov.on{display:flex}
 body.run{cursor:none}
 </style>
 </head>
 <body>
 <iframe id="v" allow="microphone; autoplay; fullscreen" title="visual"></iframe>
-<div id="go"><span>Click to start</span></div>
+<div id="go"><span>Click to start</span><div class="pair" id="pair1"></div></div>
+<div id="pairov"><div class="pair" id="pair2"></div></div>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+<script src="relay.js"></script>
 <script>
 'use strict';
 const VIS = {
@@ -30,7 +41,20 @@ const VIS = {
 const Q = new URLSearchParams(location.search);
 let cur = VIS[Q.get('v')] ? Q.get('v') : 'tunnel';
 const fr = document.getElementById('v'), go = document.getElementById('go');
-const ch = new BroadcastChannel('vibe-raas');
+let ROOM = VRRelay.clean(Q.get('room'));
+if (ROOM.length < 3) { ROOM = VRRelay.newCode(); }
+const relay = VRRelay({ room: ROOM, role: 'show', onMsg: m => onCmd(m) });
+const CTRL = new URL('control.html?room=' + ROOM, location.href).href;
+function pairHTML() {
+  let svg = '';
+  try { const q = qrcode(0, 'M'); q.addData(CTRL); q.make(); svg = q.createSvgTag({ cellSize: 6, margin: 2, scalable: true }); } catch (e) {}
+  return '<div class="qr">' + svg + '</div><div>Phone control: scan this<b>' + ROOM + '</b>or open<small>' + CTRL + '</small></div>';
+}
+document.getElementById('pair1').innerHTML = pairHTML();
+document.getElementById('pair2').innerHTML = pairHTML();
+const pov = document.getElementById('pairov');
+pov.addEventListener('click', e => { e.stopPropagation(); pov.classList.remove('on'); });
+window.__vrKey = k => { if (k === 'q' || k === 'Q') pov.classList.toggle('on'); else if (k === 'f' || k === 'F') fs(); };
 let ctx = null, analyser = null, stream = null, src = null, td = null, deviceId = Q.get('dev') || '', note = 'not started';
 window.__vrPal = null; window.__vrK = 1; window.__vrLogo = false;
 
@@ -64,17 +88,20 @@ async function start() {
   try { await ctx.resume(); } catch (e) {}
   window.__vr = { ctx, analyser, stream: null };
   await openMic(deviceId);
+  await listDevs();
   load(cur);
 }
 function load(v) {
   if (!VIS[v]) return;
   cur = v; fr.src = VIS[v] + '&t=' + Date.now();
-  try { history.replaceState(null, '', '?v=' + v); } catch (e) {}
+  try { history.replaceState(null, '', '?room=' + ROOM + '&v=' + v + (deviceId ? '&dev=' + encodeURIComponent(deviceId) : '')); } catch (e) {}
 }
+try { history.replaceState(null, '', '?room=' + ROOM + '&v=' + cur + (deviceId ? '&dev=' + encodeURIComponent(deviceId) : '')); } catch (e) {}
 go.addEventListener('click', start);
 addEventListener('keydown', e => {
   if (!ctx && (e.key === ' ' || e.key === 'Enter')) { start(); return; }
   if (e.key === 'f' || e.key === 'F') fs();
+  if (e.key === 'q' || e.key === 'Q') pov.classList.toggle('on');
 });
 function fs() { if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {}); else document.exitFullscreen().catch(() => {}); }
 addEventListener('dblclick', fs);
@@ -82,8 +109,7 @@ addEventListener('click', () => { if (ctx && ctx.state !== 'running') ctx.resume
 
 function cw() { try { return fr.contentWindow; } catch (e) { return null; } }
 function send(c) { const w = cw(); try { if (w && w.__vrCmd) w.__vrCmd(c); } catch (e) {} }
-ch.onmessage = async (ev) => {
-  const m = ev.data || {};
+async function onCmd(m) {
   if (m.type === 'visual') load(m.v);
   else if (m.type === 'pal') { window.__vrPal = m.name; send(m); }
   else if (m.type === 'k') { window.__vrK = m.value; send(m); }
@@ -91,19 +117,29 @@ ch.onmessage = async (ev) => {
   else if (m.type === 'tap' || m.type === 'hud') send(m);
   else if (m.type === 'input') { if (!ctx) return; deviceId = m.id || ''; await openMic(deviceId, m.label); load(cur); }
   else if (m.type === 'fs') fs();
-  else if (m.type === 'ping') status();
-};
+  else if (m.type === 'ping') { status(true); listDevs(); }
+}
+let devs = [];
+async function listDevs() {
+  try {
+    const d = await navigator.mediaDevices.enumerateDevices();
+    devs = d.filter(x => x.kind === 'audioinput' && x.deviceId !== 'default').map((x, i) => ({ id: x.deviceId, label: x.label || ('Input ' + (i + 1)) }));
+  } catch (e) {}
+}
+if (navigator.mediaDevices) navigator.mediaDevices.addEventListener('devicechange', listDevs);
 function level() {
   if (!analyser) return 0;
   analyser.getFloatTimeDomainData(td); let s = 0; for (let i = 0; i < td.length; i++) s += td[i] * td[i];
   return Math.min(1, Math.sqrt(s / td.length) * 4);
 }
-let lastBeats = -1, beatT = 0;
-function status() {
+let lastBeats = -1, beatT = 0, lastNet = 0;
+function status(force) {
   let st = null; const w = cw(); try { if (w && w.__vrStatus) st = w.__vrStatus(); } catch (e) {}
   if (st && st.beats !== lastBeats) { lastBeats = st.beats; beatT = performance.now(); }
-  ch.postMessage({ type: 'status', started: !!ctx, v: cur, bpm: st ? st.bpm : 0, beats: st ? st.beats : 0, beatAge: performance.now() - beatT,
-    level: level(), pal: st ? st.pal : window.__vrPal, K: st ? st.K : window.__vrK, logo: window.__vrLogo, audio: note, dev: deviceId, fs: !!document.fullscreenElement });
+  const now = performance.now(), net = force || now - lastNet >= 240;
+  if (net) lastNet = now;
+  relay.send({ type: 'status', started: !!ctx, live: !!ctx, v: cur, bpm: st ? st.bpm : 0, beats: st ? st.beats : 0, beatAge: now - beatT, beatAt: Date.now() - (now - beatT),
+    level: level(), pal: st ? st.pal : window.__vrPal, K: st ? st.K : window.__vrK, logo: window.__vrLogo, audio: note, dev: deviceId, devs: devs, fs: !!document.fullscreenElement }, net);
 }
 setInterval(status, 100);
 </script>
