@@ -45,7 +45,7 @@ body.stage #cbox img{filter:drop-shadow(0 0 2.2vh rgba(0,0,0,.55))}
 <body>
 <iframe id="v" allow="microphone; autoplay; fullscreen 'none'" title="visual"></iframe><!-- no fullscreen for the iframe: only the show page goes fullscreen, so the centre logo stays on top -->
 <div id="clogo" aria-hidden="true"><div id="cdisc"></div><div id="cbox">
- <img data-l="vibe" src="img/logo_gold.png" alt=""><img data-l="tribe" src="img/tribe_gold.svg" alt=""><img data-l="sach" src="img/sach_gold.svg" alt=""><img data-l="clapper" src="img/clapper.svg" alt="">
+ <img data-l="vibe" src="img/logo_gold.png" alt=""><img data-l="tribe" src="img/tribe_gold.svg" alt=""><img data-l="sach" src="img/sach_gold.svg" alt=""><img data-l="clapper" src="img/clapper.svg" alt=""><img data-l="fourside" src="img/fourside.png" alt="">
 </div></div>
 <div id="go"><div class="pick" id="pick"><button data-s="side">Side screen<small>1920x1200 / 1200x750</small></button><button data-s="stage">Stage screen<small>3000x720</small></button></div><span id="gospan">Pick this window's screen to start</span><div id="role"></div><div class="pair" id="pair1"></div>
 <div id="keys"><kbd>1</kbd>Tunnel <kbd>2</kbd>Stripes <kbd>3</kbd>Mandala <kbd>4</kbd>Ghoomar <kbd>5</kbd>Patola <kbd>6</kbd>Jali <kbd>7</kbd>Damru <kbd>8</kbd>Shiv &nbsp;&middot;&nbsp; <kbd>C</kbd>colour <kbd>L</kbd>logo <kbd>F</kbd>fullscreen <kbd>Q</kbd>phone code <kbd>&uarr;</kbd><kbd>&darr;</kbd>intensity <kbd>T</kbd>tap tempo</div>
@@ -106,8 +106,8 @@ window.__vrKey = k => showKey(k); // keys pressed while the visual iframe has fo
 let ctx = null, analyser = null, stream = null, src = null, td = null, deviceId = Q.get('dev') || '', note = 'not started';
 window.__vrPal = null; window.__vrK = 1;
 
-// centre logo (vibe | tribe | sach | clapper | off), remembered on this laptop
-const LOGOS = ['vibe', 'tribe', 'sach', 'clapper', 'off'];
+// centre logo (vibe | tribe | sach | clapper | fourside | off), remembered on this laptop
+const LOGOS = ['vibe', 'tribe', 'sach', 'clapper', 'fourside', 'off'];
 let logo = 'vibe';
 try { const l = localStorage.getItem('vr.clogo.' + SCREEN) || localStorage.getItem('vr.clogo'); if (LOGOS.includes(l)) logo = l; } catch (e) {}
 if (LOGOS.includes(Q.get('logo'))) logo = Q.get('logo');

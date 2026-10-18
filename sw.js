@@ -2,7 +2,7 @@
    Online: pages and scripts come from the network first (so updates show up), with the cache as fallback.
    Offline: everything comes from the precache. Fonts, images and CDN libraries are cache-first. */
 'use strict';
-const VERSION = "vr-2a784f33d6";
+const VERSION = "vr-b610d3d6d2";
 const PRECACHE = [
  "./",
  "damru/",
@@ -21,6 +21,7 @@ const PRECACHE = [
  "ghoomar/assets/logo_gold.png",
  "ghoomar/index.html",
  "img/clapper.svg",
+ "img/fourside.png",
  "img/ghoomar.jpg",
  "img/logo.png",
  "img/logo_gold.png",
