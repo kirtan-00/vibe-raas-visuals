@@ -46,8 +46,10 @@ const VIS = {
   mandala: 'stripes/?embed=1&scene=2',
   ghoomar: 'ghoomar/?embed=1',
   patola:  'patola/?embed=1',
-  jali:    'jali/?embed=1'
+  jali:    'jali/?embed=1',
+  raas:    'raas/?embed=1'
 };
+let rMode = Math.min(3, Math.max(1, parseInt(new URLSearchParams(location.search).get('mode')) || 1)); // Raas layout: 1 circles, 2 crowd, 3 bloom
 const Q = new URLSearchParams(location.search);
 let cur = VIS[Q.get('v')] ? Q.get('v') : 'tunnel';
 const fr = document.getElementById('v'), go = document.getElementById('go');
@@ -133,7 +135,7 @@ async function start() {
 }
 function load(v) {
   if (!VIS[v]) return;
-  cur = v; fr.src = VIS[v] + '&t=' + Date.now();
+  cur = v; fr.src = VIS[v] + (v === 'raas' ? '&mode=' + rMode : '') + '&t=' + Date.now();
   try { history.replaceState(null, '', '?room=' + ROOM + '&v=' + v + (deviceId ? '&dev=' + encodeURIComponent(deviceId) : '')); } catch (e) {}
 }
 try { history.replaceState(null, '', '?room=' + ROOM + '&v=' + cur + (deviceId ? '&dev=' + encodeURIComponent(deviceId) : '')); } catch (e) {}
@@ -158,6 +160,7 @@ async function onCmd(m) {
   else if (m.type === 'logo') { setLogo(m.on ? (logo === 'off' ? 'vibe' : logo) : 'off'); status(true); } // older control pages
   else if (m.type === 'hello') { if (m.cid) { const fresh = !ctrls.has(m.cid); ctrls.set(String(m.cid).slice(0, 24), performance.now()); if (fresh) status(true); } }
   else if (m.type === 'tap' || m.type === 'hud') send(m);
+  else if (m.type === 'mode') { const n = parseInt(m.mode); if (n >= 1 && n <= 3) { rMode = n; send({ type: 'key', key: String(n) }); status(true); } }
   else if (m.type === 'input') { if (!ctx) return; deviceId = m.id || ''; await openMic(deviceId, m.label); load(cur); }
   else if (m.type === 'fs') fs();
   else if (m.type === 'ping') { status(true); listDevs(); }
@@ -179,10 +182,11 @@ let lastBeats = -1, beatT = 0, lastNet = 0;
 function status(force) {
   let st = null; const w = cw(); try { if (w && w.__vrStatus) st = w.__vrStatus(); } catch (e) {}
   if (st && st.beats !== lastBeats) { lastBeats = st.beats; beatT = performance.now(); }
+  if (st && st.mode) rMode = st.mode;
   const now = performance.now(), net = force || now - lastNet >= 240;
   if (net) lastNet = now;
   relay.send({ type: 'status', started: !!ctx, live: !!ctx, v: cur, bpm: st ? st.bpm : 0, beats: st ? st.beats : 0, beatAge: now - beatT, beatAt: Date.now() - (now - beatT),
-    level: level(), pal: st ? st.pal : window.__vrPal, K: st ? st.K : window.__vrK, logo: logo, ctrls: ctrlCount(), audio: note, dev: deviceId, devs: devs, fs: !!document.fullscreenElement }, net);
+    level: level(), pal: st ? st.pal : window.__vrPal, K: st ? st.K : window.__vrK, logo: logo, mode: rMode, ctrls: ctrlCount(), audio: note, dev: deviceId, devs: devs, fs: !!document.fullscreenElement }, net);
 }
 setInterval(status, 100);
 </script>

@@ -85,6 +85,12 @@ body.nojoin #join{display:block}body.nojoin .wrap{display:none}
   <h2>Visual</h2>
   <div class="row" id="vis"></div>
  </section>
+ <section id="rmodes" hidden>
+  <h2>Raas layout</h2>
+  <div class="row" id="modes">
+   <button data-m="1">Circles</button><button data-m="2">Crowd</button><button data-m="3">Bloom</button>
+  </div>
+ </section>
  <section>
   <h2>Colours</h2>
   <div class="row" id="pal">
@@ -139,13 +145,14 @@ if (relay) { $('room').textContent = 'ROOM ' + ROOM; relay.onConn = up => { if (
 let lastNet = 0, lastBc = 0, bpmNow = 0, beatAnchor = 0;
 let lastSeen = 0, lastV = '';
 // UI follows the show's status (so every phone stays in sync); a local tap holds its own choice briefly
-const held = { v: 0, p: 0, l: 0 };
+const held = { v: 0, p: 0, l: 0, m: 0 };
 const CID = Math.random().toString(36).slice(2, 10);
 function hello() { send({ type: 'hello', cid: CID }); }
 const VISUALS = [
   { v: 'tunnel', name: 'Tunnel', path: 'tunnel/' }, { v: 'stripes', name: 'Stripes', path: 'stripes/' },
   { v: 'mandala', name: 'Mandala', path: 'stripes/' }, { v: 'ghoomar', name: 'Ghoomar', path: 'ghoomar/' },
-  { v: 'patola', name: 'Patola', path: 'patola/', probe: true }, { v: 'jali', name: 'Jali', path: 'jali/', probe: true }
+  { v: 'patola', name: 'Patola', path: 'patola/', probe: true }, { v: 'jali', name: 'Jali', path: 'jali/', probe: true },
+  { v: 'raas', name: 'Raas', path: 'raas/', probe: true }
 ];
 async function buildVis() {
   const ok = await Promise.all(VISUALS.map(x => !x.probe ? true :
@@ -154,7 +161,7 @@ async function buildVis() {
   VISUALS.forEach((x, i) => {
     if (!ok[i]) return;
     const b = document.createElement('button'); b.dataset.v = x.v; b.textContent = x.name;
-    b.onclick = () => { send({ type: 'visual', v: x.v }); mark('#vis', 'v', x.v); held.v = performance.now(); };
+    b.onclick = () => { send({ type: 'visual', v: x.v }); mark('#vis', 'v', x.v); held.v = performance.now(); $('rmodes').hidden = x.v !== 'raas'; };
     row.appendChild(b);
   });
   if (lastV) mark('#vis', 'v', lastV);
@@ -162,6 +169,7 @@ async function buildVis() {
 buildVis();
 document.querySelectorAll('#pal button').forEach(b => b.onclick = () => { send({ type: 'pal', name: b.dataset.p }); mark('#pal', 'p', b.dataset.p); held.p = performance.now(); });
 document.querySelectorAll('#logos button').forEach(b => b.onclick = () => { send({ type: 'clogo', name: b.dataset.l }); mark('#logos', 'l', b.dataset.l); held.l = performance.now(); });
+document.querySelectorAll('#modes button').forEach(b => b.onclick = () => { send({ type: 'mode', mode: +b.dataset.m }); mark('#modes', 'm', b.dataset.m); held.m = performance.now(); });
 function mark(sel, attr, val) { document.querySelectorAll(sel + ' button').forEach(b => b.classList.toggle('sel', b.dataset[attr] === val)); }
 $('tap').addEventListener('pointerdown', e => { e.preventDefault(); send({ type: 'tap' }); flash(); });
 addEventListener('keydown', e => { if (e.key === ' ' || e.key === 't' || e.key === 'T') { e.preventDefault(); send({ type: 'tap' }); flash(); } });
@@ -192,6 +200,8 @@ function onStatus(m, via) {
 
   const HOLD = 1500;
   if (m.v) { lastV = m.v; if (now - held.v > HOLD) mark('#vis', 'v', m.v); }
+  $('rmodes').hidden = (now - held.v > HOLD ? m.v : document.querySelector('#vis button.sel')?.dataset.v) !== 'raas';
+  if (m.mode && now - held.m > HOLD) mark('#modes', 'm', String(m.mode));
   if (m.pal && now - held.p > HOLD) mark('#pal', 'p', m.pal);
   if (typeof m.logo === 'string' && now - held.l > HOLD) mark('#logos', 'l', m.logo);
   if (typeof m.ctrls === 'number') { const n = Math.max(1, m.ctrls); $('ctrls').textContent = n + (n === 1 ? ' controller connected' : ' controllers connected'); }

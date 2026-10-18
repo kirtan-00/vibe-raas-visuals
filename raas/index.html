@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en">
+<head>
+<script src="../vr-embed.js"></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Raas</title>
+<style>
+  html,body{margin:0;height:100%;background:#0c0001;overflow:hidden}
+  body.run{cursor:none}
+  canvas{position:fixed;left:0;top:0;width:100vw;height:100vh;display:block}
+  #hud{position:fixed;left:12px;top:12px;font:12px/1.55 Menlo,ui-monospace,monospace;color:#f6e7c8;background:rgba(12,0,1,.85);padding:10px 14px;border:1px solid rgba(233,199,131,.45);display:none;z-index:6;white-space:pre}
+  #start{position:fixed;inset:0;z-index:7;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2.2vmin;
+    background:rgba(12,0,1,.74);color:#f6e7c8;font-family:Georgia,'Times New Roman',serif;cursor:pointer;text-align:center}
+  #start h1{margin:0;font-weight:400;font-size:6vmin;letter-spacing:.02em;color:#e9c783}
+  #start p{margin:0;font-size:2.2vmin;opacity:.8;max-width:70vmin;line-height:1.5}
+  #start .k{font-family:Menlo,monospace;font-size:1.6vmin;opacity:.55}
+  #start.gone{display:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<div id="start">
+  <h1>Click to begin</h1>
+  <p>Allow the microphone so the dancers jump with the dhol and twirl on the taali. No mic? They keep their own beat at 128.</p>
+  <p class="k">1 circles &middot; 2 crowd &middot; 3 bloom &middot; T tap &middot; P palette &middot; I input &middot; F fullscreen &middot; H info &middot; Up/Down intensity</p>
+</div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const Q = new URLSearchParams(location.search);
+const DEMO = Q.get('demo') === '1';
+const TAU = Math.PI * 2;
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+let EMBED = false;
+try { EMBED = window.parent !== window && !!window.parent.__vr; } catch (e) {}
+
+/* ==== palettes ==== */
+// ground (centre of the floor), edge (vignette), dot (bandhani), glow (beat bloom)
+const PALS = [
+  { name: 'Kumkum', ground: '#2e0309', edge: '#0a0001', dot: '#e9c783', glow: '#b3172a' },
+  { name: 'Haldi',  ground: '#3a1704', edge: '#0d0500', dot: '#f6c33a', glow: '#d0640e' },
+  { name: 'Mor',    ground: '#05302e', edge: '#010908', dot: '#d9b45a', glow: '#11857d' },
+  { name: 'Raat',   ground: '#161a4c', edge: '#03040f', dot: '#e5c06a', glow: '#3a3fa0' },
+];
+let palIdx = 0;
+{ const pq = Q.get('pal'); if (pq !== null) { const n = PALS.findIndex(p => p.name.toLowerCase() === pq.toLowerCase()); palIdx = n >= 0 ? n : clamp(parseInt(pq) || 0, 0, PALS.length - 1); } }
+const P = () => PALS[palIdx];
+
+/* ==== beat ==== */
+const B = { bpm: 128, period: 60 / 128, count: 0, next: 0, lastBeat: -99, lastOnset: -99, onsets: [], taps: [], src: 'auto', claps: 0, lastClap: -99 };
+function setBpm(bpm) { B.bpm = clamp(bpm, 60, 200); B.period = 60 / B.bpm; }
+function fireBeat(t) { B.count++; B.lastBeat = t; onBeat(t); }
+
+/* ==== audio ==== */
+let ac = null, analyser = null, fd = null, prevMag = null, micStream = null, srcNode = null, devices = [], devIdx = -1, audioNote = 'none';
+const LV = { pkA: .05, energy: 0, slow: .35, lowN: 0, pkL: .02, kF: [], cF: [], pkKF: .01, pkCF: .01, hat: 0, pkH: .01, hatN: 0 };
+function initCtx() {
+  if (ac) return;
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+  analyser = ac.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.15;
+  analyser.minDecibels = -95; analyser.maxDecibels = -15;
+  fd = new Uint8Array(analyser.frequencyBinCount); prevMag = new Float32Array(analyser.frequencyBinCount);
+  const sink = ac.createGain(); sink.gain.value = 0; analyser.connect(sink); sink.connect(ac.destination);
+}
+async function startMic(deviceId) {
+  initCtx(); try { await ac.resume(); } catch (e) {}
+  // embed: reuse the parent's analyser if it exposes one
+  try {
+    if (EMBED && window.parent.__vr.analyser && !srcNode) {
+      const pa = window.parent.__vr.analyser;
+      if (pa.context === ac) { srcNode = pa; pa.connect(analyser); audioNote = 'show: parent analyser'; return; }
+    }
+  } catch (e) {}
+  try {
+    const c = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+    if (deviceId) c.deviceId = { exact: deviceId };
+    const s = await navigator.mediaDevices.getUserMedia({ audio: c });
+    if (srcNode) srcNode.disconnect();
+    if (micStream && !EMBED) micStream.getTracks().forEach(t => t.stop());
+    micStream = s; srcNode = ac.createMediaStreamSource(s); srcNode.connect(analyser);
+    audioNote = (EMBED ? 'show: ' : 'mic: ') + (s.getAudioTracks()[0] ? s.getAudioTracks()[0].label || 'input' : 'input');
+    try { devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput'); } catch (e) {}
+  } catch (e) { audioNote = 'no mic (' + e.name + '), auto beat'; }
+}
+async function nextInput() {
+  if (EMBED) return;
+  if (!devices.length) { await startMic(); return; }
+  devIdx = (devIdx + 1) % devices.length; await startMic(devices[devIdx].deviceId);
+}
+function startDemo() {
+  initCtx(); ac.resume().catch(() => {});
+  audioNote = 'demo track 128 BPM';
+  const out = ac.createGain(); out.gain.value = 0.9; out.connect(analyser);
+  const nb = ac.createBuffer(1, ac.sampleRate * 0.3, ac.sampleRate), nd = nb.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  const per = 60 / 128; let t0 = ac.currentTime + 0.2, k = 0;
+  function kick(t) {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.14);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(1, t + 0.004); g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.35);
+  }
+  function hat(t, lvl) {
+    const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    s.buffer = nb; f.type = 'highpass'; f.frequency.value = 7000;
+    g.gain.setValueAtTime(lvl, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+    s.connect(f); f.connect(g); g.connect(out); s.start(t); s.stop(t + 0.08);
+  }
+  function clap(t) {
+    const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    s.buffer = nb; f.type = 'bandpass'; f.frequency.value = 2400; f.Q.value = 0.9;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(1.6, t + 0.003); g.gain.exponentialRampToValueAtTime(0.4, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(1.4, t + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
+    s.connect(f); f.connect(g); g.connect(out); s.start(t); s.stop(t + 0.16);
+  }
+  function tone(t) {
+    const o = ac.createOscillator(), g = ac.createGain(); o.type = 'triangle'; o.frequency.value = 440 + 110 * (k % 3);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.2, t + 0.01); g.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.3);
+  }
+  setInterval(() => {
+    while (t0 < ac.currentTime + 0.15) {
+      kick(t0); hat(t0 + per / 2, 0.3); hat(t0 + per / 4, 0.1);
+      if (k % 2 === 1) clap(t0 + per * 0.5);
+      if (k % 2) tone(t0 + per * 0.75);
+      t0 += per; k++;
+    }
+  }, 25);
+}
+function bins(lo, hi) { const hz = ac.sampleRate / analyser.fftSize; return [Math.max(1, Math.floor(lo / hz)), Math.min(fd.length - 1, Math.ceil(hi / hz))]; }
+let KB = null, CB = null, HB = null;
+function stats(arr) { let m = 0; for (const f of arr) m += f; m /= arr.length; let v = 0; for (const f of arr) v += (f - m) * (f - m); return [m, Math.sqrt(v / arr.length)]; }
+function analyse(now, dt) {
+  if (!analyser || ac.state !== 'running' || (!srcNode && !DEMO)) { LV.energy = lerp(LV.energy, 0.35, dt); LV.slow = lerp(LV.slow, 0.35, dt * .3); LV.hatN *= Math.exp(-dt * 8); return; }
+  analyser.getByteFrequencyData(fd);
+  if (!KB) { KB = bins(40, 150); CB = bins(1500, 4000); HB = bins(6000, 12000); }
+  let kf = 0, cf = 0, low = 0, all = 0, hat = 0;
+  for (let i = 1; i < fd.length; i++) {
+    const m = fd[i] / 255, d = m - prevMag[i]; prevMag[i] = m;
+    if (i < 700) all += m * m;
+    if (i >= KB[0] && i <= KB[1]) { low += m * m; if (d > 0) kf += d; }
+    else if (i >= CB[0] && i <= CB[1]) { if (d > 0) cf += d; }
+    else if (i >= HB[0] && i <= HB[1]) hat += m * m;
+  }
+  low /= (KB[1] - KB[0] + 1); kf /= (KB[1] - KB[0] + 1); cf /= (CB[1] - CB[0] + 1); all /= 700; hat /= (HB[1] - HB[0] + 1);
+  LV.pkA = Math.max(all, LV.pkA * 0.9993, 0.002); LV.pkL = Math.max(low, LV.pkL * 0.9993, 0.004);
+  LV.pkH = Math.max(hat, LV.pkH * 0.9993, 0.0015);
+  LV.lowN = low / LV.pkL;
+  const hn = Math.sqrt(hat / LV.pkH);
+  LV.hatN = hn > LV.hatN ? lerp(LV.hatN, hn, .6) : lerp(LV.hatN, hn, .12);
+  const a = Math.sqrt(all / LV.pkA); LV.energy = a > LV.energy ? lerp(LV.energy, a, .25) : lerp(LV.energy, a, .03);
+  LV.slow = lerp(LV.slow, LV.energy, 1 - Math.exp(-dt / 3.0));
+  LV.pkKF = Math.max(kf, LV.pkKF * 0.9995, 0.005); LV.pkCF = Math.max(cf, LV.pkCF * 0.9995, 0.003);
+  const kn = kf / LV.pkKF, cn = cf / LV.pkCF;
+  LV.kF.push(kn); if (LV.kF.length > 45) LV.kF.shift();
+  LV.cF.push(cn); if (LV.cF.length > 45) LV.cF.shift();
+  const [km, ks] = stats(LV.kF), [cm, cs] = stats(LV.cF);
+  if (kn > km + 1.5 * ks + 0.12 && LV.lowN > 0.35 && low > 0.002 && now - B.lastOnset > 0.24) onset(now);
+  if (cn > cm + 1.8 * cs + 0.15 && cf > 0.004 && now - B.lastClap > 0.13) { B.lastClap = now; B.claps++; onClap(now); }
+}
+function onset(now) {
+  const ioi = now - B.lastOnset; B.lastOnset = now;
+  if (ioi > 0.24 && ioi < 1.5) {
+    B.onsets.push(ioi); if (B.onsets.length > 10) B.onsets.shift();
+    if (B.onsets.length >= 4) {
+      const f = B.onsets.map(x => { let bpm = 60 / x; while (bpm < 92) bpm *= 2; while (bpm > 184) bpm /= 2; return bpm; }).sort((p, q) => p - q);
+      setBpm(lerp(B.bpm, f[f.length >> 1], .3));
+    }
+  }
+  B.src = 'audio';
+  fireBeat(now); B.next = now + B.period;
+}
+function clock(now) {
+  if (now - B.lastOnset < 2.2) return;
+  B.src = B.taps.length >= 2 ? 'tap' : 'auto';
+  if (now >= B.next) { if (now - B.next > B.period) B.next = now; fireBeat(B.next); B.next += B.period; }
+}
+function tap(now) {
+  if (B.taps.length && now - B.taps[B.taps.length - 1] > 2.5) B.taps = [];
+  B.taps.push(now); if (B.taps.length > 6) B.taps.shift();
+  if (B.taps.length >= 2) { const iv = (B.taps[B.taps.length - 1] - B.taps[0]) / (B.taps.length - 1); setBpm(60 / iv); }
+  B.lastOnset = -99; fireBeat(now); B.next = now + B.period;
+}
+
+/* ==== raas state ==== */
+// MODE 1 circles, 2 crowd, 3 bloom
+let MODE = clamp(parseInt(Q.get('mode')) || 1, 1, 3);
+const MODE_NAMES = ['', 'circles', 'crowd', 'bloom'];
+const T = { K: 1, dir: 1, dirS: 1, spin: 0, tw: 0, twV: 0, twDir: 1, clapT: -99, beats: [-99, -99, -99], ox: 0, oy: 0, driftA: 0.6, ringN: 0, modeT: -99, glow: 0 };
+function onBeat(t) {
+  T.beats.unshift(t); T.beats.length = 3;
+  if (B.count % 32 === 0) T.dir = -T.dir;
+  if (MODE === 3) spawnRing(t);
+}
+function onClap(t) { T.clapT = t; T.twDir = -T.twDir; T.twV += 3.4 * Math.min(1.4, T.K) * T.twDir; }
+// punch: ~50ms attack, ~300ms eased decay
+function punchEnv(dt) {
+  if (dt < 0) return 0;
+  if (dt < 0.05) { const x = dt / 0.05; return 1 - (1 - x) * (1 - x); }
+  const d = (dt - 0.05) / 0.3; if (d >= 1) return 0;
+  const y = 1 - d; return y * y * (3 - 2 * y);
+}
+// the kick envelope at a delay (for waves); looks at the last three beats so a wave is never cut short
+function envAt(now, delay) {
+  let e = 0; for (let i = 0; i < 3; i++) { const v = punchEnv(now - T.beats[i] - delay); if (v > e) e = v; }
+  return e;
+}
+function setMode(m) {
+  m = clamp(m | 0, 1, 3); if (m === MODE) return;
+  MODE = m; T.modeT = performance.now() / 1000;
+  if (MODE === 3) { parts.length = 0; const t = T.modeT; for (let i = 0; i < 9; i++) spawnRing(t, 9 - i * 0.95); }
+}
+const hsh = (a, b) => { const s = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return s - Math.floor(s); };
+
+/* ==== sprites ==== */
+// skirt radius r is a fraction of the square sprite; the sprite centre is the skirt centre (the spin pivot)
+const SPR = [
+  { f: 'd1.webp', r: 0.3441 }, { f: 'd2.webp', r: 0.3535 }, { f: 'd3.webp', r: 0.3124 }, { f: 'd4.webp', r: 0.3563 },
+  { f: 'd5.webp', r: 0.2855 }, { f: 'd6.webp', r: 0.4078 },
+];
+const NS = SPR.length;
+let ready = false;
+// mips: each level is a pre-scaled canvas with a soft dark contact halo baked in, keyed by skirt radius in px
+function bake(img, s) {
+  const Rn = s.r * img.width, levels = [];
+  let srcC = img, srcSide = img.width;
+  const radii = [Rn]; for (let R = 128; R >= 14; R = Math.round(R / 1.33)) if (R < Rn * 0.9) radii.push(R);
+  for (const R of radii) {
+    const side = Math.max(8, Math.round(img.width * R / Rn));
+    // clean downscale, stepping from the previous level so big reductions stay sharp
+    const clean = document.createElement('canvas'); clean.width = clean.height = side;
+    const cx = clean.getContext('2d'); cx.imageSmoothingEnabled = true; cx.imageSmoothingQuality = 'high';
+    cx.drawImage(srcC, 0, 0, srcSide, srcSide, 0, 0, side, side);
+    srcC = clean; srcSide = side;
+    // halo: blurred black silhouette under the dancer, keeps overlapping skirts readable
+    const pad = Math.ceil(R * 0.16), full = side + pad * 2;
+    const sil = document.createElement('canvas'); sil.width = sil.height = side;
+    const sx = sil.getContext('2d'); sx.drawImage(clean, 0, 0); sx.globalCompositeOperation = 'source-in'; sx.fillStyle = '#000'; sx.fillRect(0, 0, side, side);
+    const c = document.createElement('canvas'); c.width = c.height = full;
+    const x = c.getContext('2d');
+    x.filter = 'blur(' + Math.max(1, R * 0.07).toFixed(1) + 'px)'; x.globalAlpha = 0.7; x.drawImage(sil, pad, pad);
+    x.filter = 'none'; x.globalAlpha = 1; x.drawImage(clean, pad, pad);
+    levels.push({ c, R, k: full / R }); // draw side = k * wanted skirt radius
+  }
+  return levels;
+}
+function loadSprites() {
+  return Promise.all(SPR.map(s => new Promise((res, rej) => {
+    const im = new Image(); im.onload = () => { s.mips = bake(im, s); res(); }; im.onerror = rej; im.src = 'assets/' + s.f;
+  })));
+}
+
+/* ==== canvas ==== */
+const cv = $('c');
+const ctx = cv.getContext('2d', { alpha: false });
+const SCALE = clamp(parseFloat(Q.get('scale')) || 1, 0.25, 2);
+let W = 0, H = 0, CX = 0, CY = 0, BASE = 1, HD = 1;
+let bg = null;
+function resize() {
+  W = Math.max(1, Math.round(innerWidth * SCALE)); H = Math.max(1, Math.round(innerHeight * SCALE));
+  cv.width = W; cv.height = H; CX = W / 2; CY = H / 2; BASE = Math.min(W, H); HD = Math.hypot(W, H) / 2;
+  buildBg(); buildRings();
+}
+// festive ground: deep radial floor + faint bandhani dot clusters, pre-rendered once per size/palette
+function buildBg() {
+  const p = P();
+  bg = document.createElement('canvas'); bg.width = W; bg.height = H;
+  const x = bg.getContext('2d');
+  const g = x.createRadialGradient(CX, CY, 0, CX, CY, HD);
+  g.addColorStop(0, p.ground); g.addColorStop(0.55, mix(p.ground, p.edge, 0.45)); g.addColorStop(1, p.edge);
+  x.fillStyle = g; x.fillRect(0, 0, W, H);
+  // bandhani: diamond lattice of 4-dot clusters with a bright centre speck
+  const sp = BASE / 17, r = sp * 0.07;
+  x.fillStyle = p.dot;
+  for (let j = -1, row = 0; j * sp * 0.5 < H + sp; j++, row++) {
+    const y = j * sp * 0.5, off = (row & 1) ? sp * 0.5 : 0;
+    for (let i = -1; i * sp < W + sp; i++) {
+      const cx0 = i * sp + off, d = Math.hypot(cx0 - CX, y - CY) / HD;
+      x.globalAlpha = 0.05 + 0.1 * (1 - d) * (1 - d);
+      for (let q = 0; q < 4; q++) { const a = q * TAU / 4 + TAU / 8; x.beginPath(); x.arc(cx0 + Math.cos(a) * r * 2.2, y + Math.sin(a) * r * 2.2, r, 0, TAU); x.fill(); }
+      x.globalAlpha *= 1.4; x.beginPath(); x.arc(cx0, y, r * 0.75, 0, TAU); x.fill();
+    }
+  }
+  x.globalAlpha = 1;
+  document.body.style.background = p.edge;
+}
+function mix(a, b, t) {
+  const A = parseInt(a.slice(1), 16), Bc = parseInt(b.slice(1), 16);
+  const c = [16, 8, 0].map(s => Math.round(lerp(A >> s & 255, Bc >> s & 255, t)));
+  return 'rgb(' + c.join(',') + ')';
+}
+
+/* ==== drawing ==== */
+let drawn = 0;
+function dancer(si, x, y, R, rot) {
+  if (x < -R * 2 || x > W + R * 2 || y < -R * 2 || y > H + R * 2) return;
+  const m = SPR[si].mips; let L = m[0];
+  for (let i = m.length - 1; i >= 0; i -= 1) if (m[i].R >= R * 0.92) { L = m[i]; break; }
+  const side = L.k * R, c = Math.cos(rot), s = Math.sin(rot);
+  ctx.setTransform(c, s, -s, c, x, y);
+  ctx.drawImage(L.c, -side / 2, -side / 2, side, side);
+  drawn++;
+}
+
+// mode 1: concentric garba rings, alternate directions, a clear middle for the logo
+let rings = [];
+function buildRings() {
+  rings = [];
+  const R0 = 0.088 * BASE;
+  let r = 0.42 * BASE, k = 0;
+  while (r < HD + R0 * 2.5) {
+    const R = R0 * (1 + 0.07 * k), n = Math.max(6, Math.floor(TAU * r / (R * 2.12)));
+    rings.push({ r, R, n, dir: k % 2 ? -1 : 1, ang: hsh(k, 3) * TAU, k });
+    r += R * 2.0 + R0 * 0.25; k++;
+  }
+}
+function drawCircles(now, dt, sp, Kc) {
+  for (const g of rings) {
+    g.ang += g.dir * T.dirS * dt * 0.13 * sp / (1 + 0.1 * g.k);
+    const e = envAt(now, g.k * 0.035), sc = 1 + 0.18 * e * Kc, rr = g.r * (1 + 0.025 * e * Kc);
+    const own = (T.spin + T.tw) * -g.dir;
+    for (let i = 0; i < g.n; i++) {
+      const a = g.ang + i * TAU / g.n;
+      dancer((i * 5 + g.k * 2) % NS, CX + Math.cos(a) * rr, CY + Math.sin(a) * rr, g.R * sc, own + i * 2.4);
+    }
+  }
+}
+
+// mode 2: dense staggered crowd that drifts; the kick travels out from the middle as a wave
+function drawCrowd(now, dt, sp, Kc) {
+  const R = 0.074 * BASE, dx = R * 2.2, dy = R * 1.95;
+  T.driftA += dt * 0.025;
+  const v = 0.035 * BASE * sp;
+  T.ox += Math.cos(T.driftA) * v * dt; T.oy += Math.sin(T.driftA) * v * dt * 0.6;
+  const j0 = Math.floor((-CY - T.oy) / dy) - 2, j1 = Math.ceil((CY - T.oy) / dy) + 2;
+  for (let j = j0; j <= j1; j++) {
+    const odd = j & 1, wy = j * dy + T.oy;
+    const i0 = Math.floor((-CX - T.ox - (odd ? dx / 2 : 0)) / dx) - 2, i1 = Math.ceil((CX - T.ox) / dx) + 2;
+    for (let i = i0; i <= i1; i++) {
+      const h1 = hsh(i, j), h2 = hsh(j + 7.3, i - 1.1);
+      const x = CX + i * dx + (odd ? dx / 2 : 0) + T.ox + (h1 - 0.5) * R * 0.25, y = CY + wy + (h2 - 0.5) * R * 0.25;
+      const d = Math.hypot(x - CX, y - CY) / HD;
+      const e = envAt(now, d * 0.42), sc = (0.9 + 0.2 * h2) * (1 + 0.22 * e * Kc);
+      const dir = (i + j) & 1 ? 1 : -1;
+      dancer(Math.floor(h1 * 977) % NS, x, y, R * sc, h1 * TAU + (T.spin * 0.45 + T.tw) * dir);
+    }
+  }
+}
+
+// mode 3: rings of dancers born small in the middle that fly out past the edges, one ring per beat
+const parts = [];
+function spawnRing(t, z) {
+  const n = 7 + Math.round(clamp(LV.energy, 0, 1) * 4), ph = Math.random() * TAU, dir = (T.ringN++ & 1) ? 1 : -1;
+  for (let i = 0; i < n; i++) parts.push({ a: ph + i * TAU / n, z: z || 9, s: (i * 5 + T.ringN) % NS, rot: Math.random() * TAU, dir, born: t });
+  if (parts.length > 260) parts.splice(0, parts.length - 260);
+}
+function drawBloom(now, dt, sp, Kc) {
+  const pk = envAt(now, 0), spd = (0.3 + 0.32 * sp) * (1 + 2.4 * pk * Kc) * (B.bpm / 128);
+  const sc = 1 + 0.18 * pk * Kc;
+  for (const p of parts) { p.z *= Math.exp(-spd * dt); p.a += p.dir * dt * 0.22 * sp; }
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const p = parts[i], rr = 0.92 * BASE / p.z, R = 0.12 * BASE * Math.pow(p.z, -0.62);
+    if (rr - R * 1.6 > HD) parts.splice(i, 1);
+  }
+  parts.sort((a, b) => b.z - a.z);
+  for (const p of parts) {
+    const rr = 0.92 * BASE / p.z, R = 0.12 * BASE * Math.pow(p.z, -0.62) * sc;
+    const fade = clamp((9.2 - p.z) / 2.2, 0, 1);
+    ctx.globalAlpha = fade * modeA;
+    dancer(p.s, CX + Math.cos(p.a) * rr, CY + Math.sin(p.a) * rr, R, p.rot + (T.spin + T.tw) * p.dir);
+  }
+  ctx.globalAlpha = modeA;
+}
+
+let modeA = 1;
+function render(now, dt) {
+  const K = T.K, Kc = Math.min(1.4, K);
+  T.dirS = lerp(T.dirS, T.dir, 1 - Math.exp(-dt * 0.8));
+  // RMS energy drives drift and spin speed; claps add a twirl that bleeds off
+  const sp = (0.45 + 0.9 * clamp(LV.slow, 0, 1.2) + 0.45 * clamp(LV.energy, 0, 1.2)) * (B.bpm / 128);
+  T.spin += dt * 0.9 * sp;
+  T.twV += clamp(LV.hatN, 0, 1.2) * Kc * 0.6 * dt * T.twDir;
+  T.tw += T.twV * dt; T.twV *= Math.exp(-dt * 2.6);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  ctx.drawImage(bg, 0, 0);
+  const pk = envAt(now, 0);
+  T.glow = Math.max(pk, T.glow * Math.exp(-dt * 5));
+  if (T.glow > 0.01) {
+    const g = ctx.createRadialGradient(CX, CY, 0, CX, CY, HD);
+    g.addColorStop(0, P().glow); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.28 * T.glow * Kc;
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+  }
+  if (!ready) return;
+  const mt = clamp((now - T.modeT) / 0.6, 0, 1); modeA = mt * mt * (3 - 2 * mt);
+  ctx.globalAlpha = modeA; drawn = 0;
+  if (MODE === 1) drawCircles(now, dt, sp, Kc);
+  else if (MODE === 2) drawCrowd(now, dt, sp, Kc);
+  else drawBloom(now, dt, sp, Kc);
+  ctx.globalAlpha = 1; ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+/* ==== keys ==== */
+let hudOn = Q.get('hud') === '1' && !EMBED;
+addEventListener('keydown', (ev) => {
+  const k = ev.key, now = performance.now() / 1000;
+  if (!started && (k === ' ' || k === 'Enter')) { begin(); ev.preventDefault(); return; }
+  if (k === '1' || k === '2' || k === '3') setMode(+k);
+  else if (k === 'p' || k === 'P') { palIdx = (palIdx + 1) % PALS.length; buildBg(); }
+  else if (k === 'f' || k === 'F') toggleFS();
+  else if (k === 't' || k === 'T') tap(now);
+  else if (k === 'h' || k === 'H') hudOn = !hudOn;
+  else if (k === 'i' || k === 'I') nextInput();
+  else if (k === 'ArrowUp') T.K = Math.min(1.8, T.K + .15);
+  else if (k === 'ArrowDown') T.K = Math.max(.3, T.K - .15);
+  else return;
+  ev.preventDefault();
+});
+function toggleFS() { if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {}); else document.exitFullscreen(); }
+let started = false;
+function begin() {
+  if (started) return; started = true; $('start').classList.add('gone'); document.body.classList.add('run');
+  if (DEMO) { if (ac) ac.resume(); return; }
+  if (!EMBED && !document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
+  startMic();
+}
+$('start').addEventListener('click', begin);
+addEventListener('click', () => { if (ac && ac.state !== 'running') ac.resume(); });
+
+/* ==== loop ==== */
+let last = performance.now() / 1000, hudN = 0;
+window.__ft = [];
+window.__state = () => ({ sinceBeat: performance.now() / 1000 - B.lastBeat, beats: B.count, claps: B.claps, src: B.src, bpm: B.bpm, energy: LV.energy, slow: LV.slow, hat: LV.hatN, mode: MODE, drawn, parts: parts.length, ready, audio: audioNote, ac: ac && ac.state });
+window.__kick = () => { const t = performance.now() / 1000; fireBeat(t); B.next = t + B.period; };
+window.__clap = () => { B.claps++; onClap(performance.now() / 1000); };
+window.__setMode = setMode;
+// the show reads __vrStatus(); add the layout so phones can mark the chosen chip
+if (typeof window.__vrStatus === 'function') { const prev = window.__vrStatus; window.__vrStatus = () => Object.assign(prev(), { mode: MODE }); }
+window.__vrSub = () => MODE;
+function frame() {
+  const now = performance.now() / 1000, dt = clamp(now - last, 0, 0.1);
+  window.__ft.push((now - last) * 1000); if (window.__ft.length > 1200) window.__ft.shift();
+  last = now;
+  analyse(now, dt); clock(now);
+  render(now, dt);
+  if (hudOn && (hudN++ % 6 === 0)) {
+    const ft = window.__ft.slice(-60), avg = ft.reduce((x, y) => x + y, 0) / ft.length;
+    $('hud').style.display = 'block';
+    $('hud').textContent = `bpm     ${B.bpm.toFixed(1)}  src ${B.src}  beat ${B.count}\nclaps   ${B.claps}\nenergy  ${bar(LV.energy)}\nslow    ${bar(LV.slow)}\nhats    ${bar(LV.hatN)}\nmode    ${MODE} ${MODE_NAMES[MODE]}  dancers ${drawn}\npalette ${P().name}   intensity ${T.K.toFixed(2)}\naudio   ${audioNote}\nsize    ${W}x${H}  ${avg.toFixed(1)} ms/frame`;
+  } else if (!hudOn) $('hud').style.display = 'none';
+  requestAnimationFrame(frame);
+}
+function bar(v) { const n = Math.round(clamp(v, 0, 1) * 20); return '#'.repeat(n) + '.'.repeat(20 - n) + ' ' + v.toFixed(2); }
+
+addEventListener('resize', resize);
+resize();
+B.next = performance.now() / 1000 + 0.3;
+if (EMBED) { started = true; $('start').classList.add('gone'); document.body.classList.add('run'); startMic(); }
+else if (DEMO) { started = true; $('start').classList.add('gone'); startDemo(); }
+loadSprites().then(() => {
+  ready = true; T.modeT = performance.now() / 1000;
+  if (MODE === 3) { const t = T.modeT; for (let i = 0; i < 9; i++) spawnRing(t, 9 - i * 0.95); }
+}).catch(e => console.error('sprites', e));
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
