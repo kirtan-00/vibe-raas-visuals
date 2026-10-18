@@ -23,7 +23,7 @@
 <div id="hud"></div>
 <div id="start">
   <h1>Click to begin</h1>
-  <p>Allow the microphone so the dancers jump with the dhol and twirl on the taali. No mic? They keep their own beat at 128.</p>
+  <p>Allow the microphone so the dancers jump with the dhol. No mic? They keep their own beat at 128.</p>
   <p class="k">1 circles &middot; 2 crowd &middot; 3 bloom &middot; T tap &middot; P palette &middot; I input &middot; F fullscreen &middot; H info &middot; Up/Down intensity</p>
 </div>
 <script>
@@ -195,7 +195,7 @@ function onBeat(t) {
   if (B.count % 32 === 0) T.dir = -T.dir;
   if (MODE === 3) spawnRing(t);
 }
-function onClap(t) { T.clapT = t; T.twDir = -T.twDir; T.twV += 3.4 * Math.min(1.4, T.K) * T.twDir; }
+function onClap(t) { T.clapT = t; }
 // punch: ~50ms attack, ~300ms eased decay
 function punchEnv(dt) {
   if (dt < 0) return 0;
@@ -379,11 +379,9 @@ let modeA = 1;
 function render(now, dt) {
   const K = T.K, Kc = Math.min(1.4, K);
   T.dirS = lerp(T.dirS, T.dir, 1 - Math.exp(-dt * 0.8));
-  // RMS energy drives drift and spin speed; claps add a twirl that bleeds off
+  // RMS energy drives drift speed
   const sp = (0.45 + 0.9 * clamp(LV.slow, 0, 1.2) + 0.45 * clamp(LV.energy, 0, 1.2)) * (B.bpm / 128);
-  T.spin += dt * 0.9 * sp;
-  T.twV += clamp(LV.hatN, 0, 1.2) * Kc * 0.6 * dt * T.twDir;
-  T.tw += T.twV * dt; T.twV *= Math.exp(-dt * 2.6);
+  // no self spin or twirl: dancers hold their angle and only scale with the beat
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
   ctx.drawImage(bg, 0, 0);
   const pk = envAt(now, 0);
