@@ -1,0 +1,946 @@
+<!doctype html>
+<html lang="en">
+<head>
+<script src="../vr-embed.js"></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Shiv</title>
+<style>
+  html,body{margin:0;height:100%;background:#1c0104;overflow:hidden}
+  body.run{cursor:none}
+  canvas{position:fixed;left:0;top:0;width:100vw;height:100vh;display:block}
+  #logo{position:fixed;right:2.4vmin;bottom:2.4vmin;height:9vmin;opacity:0;transition:opacity .8s;pointer-events:none;z-index:5}
+  #logo.on{opacity:.92}
+  #hud{position:fixed;left:12px;top:12px;font:12px/1.55 Menlo,ui-monospace,monospace;color:#f6e7c8;background:rgba(24,3,6,.82);padding:10px 14px;border:1px solid rgba(233,199,131,.45);display:none;z-index:6;white-space:pre}
+  #start{position:fixed;inset:0;z-index:7;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2.2vmin;
+    background:rgba(28,1,4,.72);color:#f6e7c8;font-family:Georgia,'Times New Roman',serif;cursor:pointer;text-align:center}
+  #start h1{margin:0;font-weight:400;font-size:6vmin;letter-spacing:.02em;color:#e9c783}
+  #start p{margin:0;font-size:2.2vmin;opacity:.8;max-width:70vmin;line-height:1.5}
+  #start .k{font-family:Menlo,monospace;font-size:1.6vmin;opacity:.55}
+  #start.gone{display:none}
+  #err{position:fixed;inset:0;display:none;align-items:center;justify-content:center;color:#e9c783;font:3vmin Georgia,serif;z-index:8}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<img id="logo" src="assets/logo_gold.png" alt="">
+<div id="hud"></div>
+<div id="err">WebGL2 is not available in this browser. Use Chrome.</div>
+<div id="start">
+  <h1>Click to begin</h1>
+  <p>Allow the microphone so the Tandav follows the dhol and the taali. No mic? The damru keeps its own beat at 128.</p>
+  <p class="k">1 Nataraja &middot; 2 Symbols &middot; T tap &middot; P palette &middot; I input &middot; L logo &middot; F fullscreen &middot; H info &middot; Up/Down intensity</p>
+</div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const Q = new URLSearchParams(location.search);
+const DEMO = Q.get('demo') === '1';
+let EMBED = false; try { EMBED = window.parent !== window && !!window.parent.__vr; } catch (e) {}
+const TAU = Math.PI * 2;
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+/* --------------------------------------------------------------- palettes */
+// dark, deep, main, gold, cream, acc (fire / third eye), cool (neelkanth)
+const PALS = [
+  { name: 'Kumkum', dark: '#1c0104', deep: '#4a050e', main: '#8e0f1c', gold: '#e9c783', cream: '#f6e7c8', acc: '#f08a12', cool: '#2c5c92' },
+  { name: 'Haldi',  dark: '#2a0902', deep: '#6a2204', main: '#c4560c', gold: '#f6c33a', cream: '#fff3cf', acc: '#d8321c', cool: '#22548a' },
+  { name: 'Mor',    dark: '#021a1d', deep: '#063238', main: '#0d6964', gold: '#d9b45a', cream: '#eef0d6', acc: '#d04a7a', cool: '#2a86c0' },
+  { name: 'Raat',   dark: '#03051a', deep: '#0c1444', main: '#233a8a', gold: '#e5c06a', cream: '#e4eaf6', acc: '#39a6ff', cool: '#8a66e0' },
+];
+let palIdx = 0;
+{ const pq = Q.get('pal'); if (pq) { const i = PALS.findIndex(p => p.name.toLowerCase() === pq.toLowerCase()); palIdx = i >= 0 ? i : clamp(parseInt(pq) || 0, 0, PALS.length - 1); } }
+const P = () => PALS[palIdx];
+const hex3 = h => { const n = parseInt(h.slice(1), 16); return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255]; };
+
+/* ------------------------------------------------------------------ beat */
+const B = { bpm: 128, period: 60 / 128, count: 0, next: 0, lastBeat: -99, lastOnset: -99, onsets: [], taps: [], src: 'auto', claps: 0, lastClap: -99 };
+function setBpm(bpm) { B.bpm = clamp(bpm, 60, 200); B.period = 60 / B.bpm; }
+function fireBeat(t) { B.count++; B.lastBeat = t; onBeat(t); }
+
+/* ----------------------------------------------------------------- audio */
+let ac = null, analyser = null, fd = null, prevMag = null, micStream = null, srcNode = null, devices = [], devIdx = -1, audioNote = 'none';
+const LV = { pkA: .05, energy: 0, lowN: 0, pkL: .02, kF: [], cF: [], pkKF: .01, pkCF: .01, hat: 0, pkH: .004 };
+function initCtx() {
+  if (ac) return;
+  ac = (EMBED && window.parent.__vr.ctx) || new (window.AudioContext || window.webkitAudioContext)();
+  analyser = ac.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.15;
+  analyser.minDecibels = -95; analyser.maxDecibels = -15;
+  fd = new Uint8Array(analyser.frequencyBinCount); prevMag = new Float32Array(analyser.frequencyBinCount);
+  const sink = ac.createGain(); sink.gain.value = 0; analyser.connect(sink); sink.connect(ac.destination);
+}
+async function startMic(deviceId) {
+  initCtx(); try { await ac.resume(); } catch (e) {}
+  try {
+    const c = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+    if (deviceId) c.deviceId = { exact: deviceId };
+    const s = await navigator.mediaDevices.getUserMedia({ audio: c });
+    if (srcNode) srcNode.disconnect();
+    if (micStream) micStream.getTracks().forEach(t => t.stop());
+    micStream = s; srcNode = ac.createMediaStreamSource(s); srcNode.connect(analyser);
+    audioNote = 'mic: ' + (s.getAudioTracks()[0].label || 'input');
+    try { devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput'); } catch (e) {}
+  } catch (e) { audioNote = 'no mic (' + e.name + '), auto beat'; }
+}
+async function nextInput() {
+  if (!devices.length) { await startMic(); return; }
+  devIdx = (devIdx + 1) % devices.length; await startMic(devices[devIdx].deviceId);
+}
+function startDemo() {
+  initCtx(); ac.resume().catch(() => {});
+  audioNote = 'demo track 128 BPM';
+  const out = ac.createGain(); out.gain.value = 0.9; out.connect(analyser);
+  const nb = ac.createBuffer(1, ac.sampleRate * 0.3, ac.sampleRate), nd = nb.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  const per = 60 / 128; let t0 = ac.currentTime + 0.2, k = 0;
+  function kick(t) {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.14);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(1, t + 0.004); g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.35);
+  }
+  function hat(t, lvl) {
+    const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    s.buffer = nb; f.type = 'highpass'; f.frequency.value = 7000;
+    g.gain.setValueAtTime(lvl, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+    s.connect(f); f.connect(g); g.connect(out); s.start(t); s.stop(t + 0.08);
+  }
+  function clap(t) {
+    const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    s.buffer = nb; f.type = 'bandpass'; f.frequency.value = 2400; f.Q.value = 0.9;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(1.6, t + 0.003); g.gain.exponentialRampToValueAtTime(0.4, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(1.4, t + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
+    s.connect(f); f.connect(g); g.connect(out); s.start(t); s.stop(t + 0.16);
+  }
+  setInterval(() => {
+    while (t0 < ac.currentTime + 0.15) {
+      kick(t0); hat(t0 + per / 2, 0.3); hat(t0 + per / 4, 0.1); hat(t0 + per * 3 / 4, 0.1);
+      if (k % 2 === 1) clap(t0 + per * 0.5);
+      t0 += per; k++;
+    }
+  }, 25);
+}
+function bins(lo, hi) { const hz = ac.sampleRate / analyser.fftSize; return [Math.max(1, Math.floor(lo / hz)), Math.min(fd.length - 1, Math.ceil(hi / hz))]; }
+let KB = null, CB = null, HB = null;
+function stats(arr) { let m = 0; for (const f of arr) m += f; m /= arr.length; let v = 0; for (const f of arr) v += (f - m) * (f - m); return [m, Math.sqrt(v / arr.length)]; }
+let SIM = false; // test hook: simulated hats when no audio
+function analyse(now, dt) {
+  if (!analyser || ac.state !== 'running' || (!srcNode && !DEMO)) {
+    // no audio: internal clock drives the beat; hats follow the off-beat 8ths so sparks still fly
+    const ph = ((now - B.lastBeat) / B.period) % 1;
+    const h = 0.25 + 0.55 * Math.exp(-Math.abs(ph - 0.5) * 9);
+    LV.hat = lerp(LV.hat, h, 1 - Math.exp(-dt / 0.04)); LV.energy = lerp(LV.energy, 0.62, dt); return;
+  }
+  analyser.getByteFrequencyData(fd);
+  if (!KB) { KB = bins(40, 150); CB = bins(1500, 4000); HB = bins(6000, 12000); }
+  let kf = 0, cf = 0, low = 0, all = 0, hh = 0;
+  for (let i = 1; i < fd.length; i++) {
+    const m = fd[i] / 255, d = m - prevMag[i]; prevMag[i] = m;
+    if (i < 700) all += m * m;
+    if (i >= KB[0] && i <= KB[1]) { low += m * m; if (d > 0) kf += d; }
+    else if (i >= CB[0] && i <= CB[1]) { if (d > 0) cf += d; }
+    if (i >= HB[0] && i <= HB[1]) hh += m * m;
+  }
+  low /= (KB[1] - KB[0] + 1); kf /= (KB[1] - KB[0] + 1); cf /= (CB[1] - CB[0] + 1); all /= 700; hh /= (HB[1] - HB[0] + 1);
+  LV.pkH = Math.max(hh, LV.pkH * 0.9993, 0.0006); const hn = clamp(hh / LV.pkH, 0, 1.2);
+  LV.hat = hn > LV.hat ? lerp(LV.hat, hn, 1 - Math.exp(-dt / 0.03)) : lerp(LV.hat, hn, 1 - Math.exp(-dt / 0.25));
+  LV.pkA = Math.max(all, LV.pkA * 0.9993, 0.002); LV.pkL = Math.max(low, LV.pkL * 0.9993, 0.004);
+  LV.lowN = low / LV.pkL;
+  const a = all / LV.pkA; LV.energy = a > LV.energy ? lerp(LV.energy, a, 1 - Math.exp(-dt / 0.05)) : lerp(LV.energy, a, 1 - Math.exp(-dt / 0.6));
+  LV.pkKF = Math.max(kf, LV.pkKF * 0.9995, 0.005); LV.pkCF = Math.max(cf, LV.pkCF * 0.9995, 0.003);
+  const kn = kf / LV.pkKF, cn = cf / LV.pkCF;
+  LV.kF.push(kn); if (LV.kF.length > 45) LV.kF.shift();
+  LV.cF.push(cn); if (LV.cF.length > 45) LV.cF.shift();
+  const [km, ks] = stats(LV.kF), [cm, cs] = stats(LV.cF);
+  if (kn > km + 1.5 * ks + 0.12 && LV.lowN > 0.35 && low > 0.002 && now - B.lastOnset > 0.24) onset(now);
+  if (cn > cm + 1.8 * cs + 0.15 && cf > 0.004 && now - B.lastClap > 0.13) { B.lastClap = now; B.claps++; onClap(now); }
+}
+function onset(now) {
+  const ioi = now - B.lastOnset; B.lastOnset = now;
+  if (ioi > 0.24 && ioi < 1.5) {
+    B.onsets.push(ioi); if (B.onsets.length > 10) B.onsets.shift();
+    if (B.onsets.length >= 4) {
+      const f = B.onsets.map(x => { let bpm = 60 / x; while (bpm < 92) bpm *= 2; while (bpm > 184) bpm /= 2; return bpm; }).sort((p, q) => p - q);
+      setBpm(lerp(B.bpm, f[f.length >> 1], .3));
+    }
+  }
+  B.src = 'audio';
+  fireBeat(now); B.next = now + B.period;
+}
+function clock(now) {
+  if (now - B.lastOnset < 2.2) return;
+  B.src = B.taps.length >= 2 ? 'tap' : 'auto';
+  if (now >= B.next) {
+    if (now - B.next > B.period) B.next = now;
+    fireBeat(B.next);
+    // no clap detector without audio: every second beat lands a taali so the rings still flip
+    if (B.count % 2 === 0 && now - B.lastOnset > 2.2 && !srcNode) { B.lastClap = B.next + B.period * 0.5; B.claps++; pendingClap = B.lastClap; }
+    B.next += B.period;
+  }
+  if (pendingClap > 0 && now >= pendingClap) { onClap(pendingClap); pendingClap = 0; }
+}
+let pendingClap = 0;
+function tap(now) {
+  if (B.taps.length && now - B.taps[B.taps.length - 1] > 2.5) B.taps = [];
+  B.taps.push(now); if (B.taps.length > 6) B.taps.shift();
+  if (B.taps.length >= 2) { const iv = (B.taps[B.taps.length - 1] - B.taps[0]) / (B.taps.length - 1); setBpm(60 / iv); }
+  B.lastOnset = -99; fireBeat(now); B.next = now + B.period;
+}
+
+/* ----------------------------------------------------------- tandav state */
+// K = intensity (Up/Down). zoom = tunnel depth (log space), spin = ring rotation, dir flips on taali.
+let MODE = clamp(parseInt(Q.get('mode')) || 1, 1, 2);
+const BW = 0.21;                 // band width in log-radius units
+const T = { K: 1, zoom: 0, zFrom: 0, zTo: 0, zT: -99, drift: 0, spin: 0, dir: 1, dirS: 1, clapT: -99, lurchX: 0, lurchY: 0, eS: 0.5, modeT: -99, kickN: 0 };
+const ZSTEP = 0.42 * BW, ZDUR = 0.28;
+const easeOut = x => 1 - Math.pow(1 - clamp(x, 0, 1), 3);
+function zoomNow(now) { return lerp(T.zFrom, T.zTo, easeOut((now - T.zT) / ZDUR)); }
+function onBeat(t) {
+  const z = zoomNow(t); T.zFrom = z; T.zTo = z + ZSTEP * Math.min(1.5, 0.6 + 0.4 * T.K); T.zT = t;
+  if (T.zTo > 8 * BW * 50) { T.zTo -= 8 * BW * 50; T.zFrom -= 8 * BW * 50; }
+  T.kickN++;
+  burst(26 + 20 * T.K);
+}
+function onClap(t) {
+  T.clapT = t; T.dir = -T.dir;
+  // lurch: jolt the tunnel forward and nudge its centre
+  const z = zoomNow(t); T.zFrom = z; T.zTo = Math.max(T.zTo, z) + 0.45 * BW; T.zT = t;
+  const a = Math.random() * TAU; T.lurchX = Math.cos(a) * 0.035; T.lurchY = Math.sin(a) * 0.035;
+}
+function setMode(m) { m = clamp(m | 0, 1, 2); if (m === MODE) return; MODE = m; T.modeT = performance.now() / 1000; parts.length = 0; }
+// ~40ms attack, ~360ms eased decay
+function punchEnv(dt) {
+  if (dt < 0) return 0;
+  if (dt < 0.04) { const x = dt / 0.04; return 1 - (1 - x) * (1 - x); }
+  const d = (dt - 0.04) / 0.36; if (d >= 1) return 0;
+  const y = 1 - d; return y * y * (3 - 2 * y);
+}
+
+/* ----------------------------------------------------------- sprite atlas */
+// 4x2 cells of 512. Channels: R fill, G detail line, B soft glow. "Up" in a cell = outward from the tunnel centre.
+const CELL = 512;
+function mkCanvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+function spriteFlame(f, d) {
+  const tongue = (cx, base, h, w, lean) => {
+    f.beginPath(); f.moveTo(cx - w, base);
+    f.bezierCurveTo(cx - w * 1.1, base - h * 0.45, cx - w * 0.2 + lean * 0.4, base - h * 0.6, cx + lean, base - h);
+    f.bezierCurveTo(cx + w * 0.35 + lean * 0.2, base - h * 0.62, cx + w * 1.15, base - h * 0.4, cx + w, base);
+    f.closePath(); f.fill();
+  };
+  tongue(256, 470, 400, 92, 18);
+  tongue(170, 470, 250, 58, -40);
+  tongue(342, 470, 270, 58, 44);
+  tongue(110, 470, 140, 36, -30);
+  tongue(402, 470, 150, 36, 30);
+  // inner flame line
+  d.lineWidth = 14; d.lineCap = 'round';
+  d.beginPath(); d.moveTo(256, 440); d.bezierCurveTo(226, 360, 290, 300, 266, 180); d.stroke();
+  d.beginPath(); d.moveTo(180, 440); d.bezierCurveTo(165, 380, 160, 330, 150, 300); d.stroke();
+  d.beginPath(); d.moveTo(336, 440); d.bezierCurveTo(350, 380, 360, 330, 370, 290); d.stroke();
+}
+function spriteTrishul(f, d) {
+  f.lineCap = 'round'; f.lineJoin = 'round';
+  // shaft
+  f.fillRect(244, 190, 24, 315);
+  // centre spear
+  f.beginPath(); f.moveTo(256, 22); f.bezierCurveTo(290, 80, 296, 140, 276, 200); f.lineTo(236, 200); f.bezierCurveTo(216, 140, 222, 80, 256, 22); f.fill();
+  // side prongs: curve out from the crossbar then up to points
+  f.lineWidth = 26;
+  f.beginPath(); f.moveTo(250, 214); f.bezierCurveTo(150, 220, 112, 160, 120, 70); f.stroke();
+  f.beginPath(); f.moveTo(262, 214); f.bezierCurveTo(362, 220, 400, 160, 392, 70); f.stroke();
+  f.beginPath(); f.moveTo(120, 40); f.lineTo(100, 90); f.lineTo(140, 90); f.fill();
+  f.beginPath(); f.moveTo(392, 40); f.lineTo(372, 90); f.lineTo(412, 90); f.fill();
+  // crossbar knot
+  f.beginPath(); f.ellipse(256, 222, 44, 18, 0, 0, TAU); f.fill();
+  // damru tied on the shaft
+  f.beginPath(); f.moveTo(206, 290); f.lineTo(306, 290); f.lineTo(256, 340); f.closePath(); f.fill();
+  f.beginPath(); f.moveTo(206, 390); f.lineTo(306, 390); f.lineTo(256, 340); f.closePath(); f.fill();
+  d.lineWidth = 8; d.lineCap = 'round';
+  d.beginPath(); d.moveTo(256, 60); d.lineTo(256, 190); d.stroke();
+  d.beginPath(); d.ellipse(256, 222, 44, 18, 0, 0, TAU); d.stroke();
+  d.beginPath(); d.moveTo(214, 296); d.lineTo(298, 384); d.moveTo(298, 296); d.lineTo(214, 384); d.stroke();
+  d.beginPath(); d.moveTo(206, 290); d.lineTo(306, 290); d.moveTo(206, 390); d.lineTo(306, 390); d.stroke();
+  // ribbon
+  d.lineWidth = 10; d.beginPath(); d.moveTo(268, 236); d.bezierCurveTo(330, 250, 300, 300, 350, 320); d.stroke();
+}
+function spriteBead(f, d) {
+  // a thread across the cell and a rudraksha bead with mukhi grooves
+  f.fillRect(0, 248, 512, 16);
+  f.beginPath(); f.arc(256, 256, 168, 0, TAU); f.fill();
+  d.lineWidth = 10;
+  for (let i = -2; i <= 2; i++) { d.beginPath(); d.ellipse(256, 256, Math.abs(i) * 52 + 8, 160, 0, 0, TAU); d.stroke(); }
+  d.fillStyle = '#fff';
+  for (let i = 0; i < 26; i++) { const a = i * 2.39996, r = 30 + (i * 37 % 120); d.beginPath(); d.arc(256 + Math.cos(a) * r, 256 + Math.sin(a) * r, 7, 0, TAU); d.fill(); }
+}
+function spriteSerpent(f, d) {
+  // seamless: one wave of the body per cell, a few scale marks
+  const yAt = x => 256 + 120 * Math.sin(x / 512 * TAU);
+  f.lineWidth = 70; f.lineCap = 'butt';
+  f.beginPath(); for (let x = -40; x <= 552; x += 8) { const y = yAt(x); x === -40 ? f.moveTo(x, y) : f.lineTo(x, y); } f.stroke();
+  d.fillStyle = '#fff';
+  for (let x = 0; x < 512; x += 32) {
+    const y = yAt(x), s = Math.cos(x / 512 * TAU) * 120 * TAU / 512, n = Math.hypot(1, s);
+    const nx = -s / n, ny = 1 / n;
+    d.beginPath(); d.moveTo(x - 10, y - 10 * s); d.lineTo(x + nx * 22, y + ny * 22); d.lineTo(x + 10, y + 10 * s); d.lineTo(x - nx * 22, y - ny * 22); d.closePath(); d.fill();
+  }
+  d.lineWidth = 6; d.beginPath(); for (let x = -40; x <= 552; x += 8) { const y = yAt(x) - 30; x === -40 ? d.moveTo(x, y) : d.lineTo(x, y); } d.stroke();
+}
+function spriteMoon(f, d) {
+  f.beginPath(); f.arc(256, 256, 190, 0, TAU); f.fill();
+  f.globalCompositeOperation = 'destination-out';
+  f.beginPath(); f.arc(256, 150, 175, 0, TAU); f.fill();
+  f.globalCompositeOperation = 'source-over';
+  // bindu above the bowl
+  f.beginPath(); f.arc(256, 205, 30, 0, TAU); f.fill();
+  d.lineWidth = 9;
+  d.beginPath(); d.arc(256, 256, 160, 0.25, Math.PI - 0.25); d.stroke();
+  d.beginPath(); d.arc(256, 205, 46, 0, TAU); d.stroke();
+}
+function spriteDamru(f, d) {
+  // hourglass drum, axis along the band, beaters on cords
+  f.beginPath(); f.moveTo(70, 160); f.lineTo(70, 352); f.lineTo(256, 266); f.lineTo(256, 246); f.closePath(); f.fill();
+  f.beginPath(); f.moveTo(442, 160); f.lineTo(442, 352); f.lineTo(256, 266); f.lineTo(256, 246); f.closePath(); f.fill();
+  f.beginPath(); f.ellipse(70, 256, 26, 98, 0, 0, TAU); f.fill();
+  f.beginPath(); f.ellipse(442, 256, 26, 98, 0, 0, TAU); f.fill();
+  f.lineWidth = 8; f.beginPath(); f.moveTo(256, 256); f.quadraticCurveTo(200, 360, 150, 430); f.moveTo(256, 256); f.quadraticCurveTo(312, 150, 362, 82); f.stroke();
+  f.beginPath(); f.arc(150, 434, 26, 0, TAU); f.fill(); f.beginPath(); f.arc(362, 78, 26, 0, TAU); f.fill();
+  d.lineWidth = 8;
+  d.beginPath(); for (let i = 0; i <= 6; i++) { const y = 170 + i * 29; d.moveTo(80, y); d.lineTo(246, 256 + (y - 256) * 0.1); d.moveTo(432, y); d.lineTo(266, 256 + (y - 256) * 0.1); } d.stroke();
+  d.beginPath(); d.ellipse(70, 256, 26, 98, 0, 0, TAU); d.ellipse(442, 256, 26, 98, 0, 0, TAU); d.stroke();
+}
+function spriteOm(f, d) {
+  f.textAlign = 'center'; f.textBaseline = 'middle';
+  f.font = '400px "Kohinoor Devanagari","Devanagari Sangam MN","Devanagari MT","Noto Sans Devanagari",serif';
+  f.fillText('ॐ', 256, 290);
+  d.textAlign = 'center'; d.textBaseline = 'middle'; d.font = f.font;
+  d.lineWidth = 7; d.strokeText('ॐ', 256, 290);
+}
+function spriteBilva(f, d) {
+  // three-lobed bel leaf
+  f.fillRect(250, 330, 12, 170);
+  for (const a of [-0.95, 0, 0.95]) {
+    f.save(); f.translate(256, 330); f.rotate(a);
+    f.beginPath(); f.moveTo(0, 0); f.bezierCurveTo(-78, -60, -60, -200, 0, a === 0 ? -290 : -235); f.bezierCurveTo(60, -200, 78, -60, 0, 0); f.fill();
+    d.save(); d.translate(256, 330); d.rotate(a); d.lineWidth = 9; d.beginPath(); d.moveTo(0, -10); d.lineTo(0, a === 0 ? -250 : -200); d.stroke(); d.restore();
+    f.restore();
+  }
+}
+const SPRITES = [spriteFlame, spriteTrishul, spriteBead, spriteSerpent, spriteMoon, spriteDamru, spriteOm, spriteBilva];
+function buildAtlas() {
+  const W = CELL * 4, H = CELL * 2;
+  const fc = mkCanvas(W, H), dc = mkCanvas(W, H);
+  const f = fc.getContext('2d'), d = dc.getContext('2d');
+  f.fillStyle = f.strokeStyle = '#fff'; d.fillStyle = d.strokeStyle = '#fff';
+  SPRITES.forEach((fn, i) => {
+    const x = (i % 4) * CELL, y = Math.floor(i / 4) * CELL;
+    for (const c of [f, d]) { c.save(); c.beginPath(); c.rect(x, y, CELL, CELL); c.clip(); c.translate(x, y); c.fillStyle = c.strokeStyle = '#fff'; }
+    // keep 6% padding so the glow and mip levels never bleed across cells
+    for (const c of [f, d]) { c.translate(256, 256); c.scale(0.86, 0.86); c.translate(-256, -256); }
+    fn(f, d);
+    f.restore(); d.restore();
+  });
+  // detail only where there is fill
+  d.globalCompositeOperation = 'destination-in'; d.drawImage(fc, 0, 0); d.globalCompositeOperation = 'source-over';
+  const gc = mkCanvas(W, H), g = gc.getContext('2d');
+  for (let i = 0; i < 8; i++) {
+    const x = (i % 4) * CELL, y = Math.floor(i / 4) * CELL;
+    g.save(); g.beginPath(); g.rect(x, y, CELL, CELL); g.clip(); g.filter = 'blur(22px)'; g.drawImage(fc, 0, 0); g.drawImage(fc, 0, 0); g.restore();
+  }
+  return packRGB(fc, dc, gc, null, W, H);
+}
+function packRGB(r, g, b, a, W, H) {
+  const R = r.getContext('2d').getImageData(0, 0, W, H).data, G = g.getContext('2d').getImageData(0, 0, W, H).data,
+    Bc = b.getContext('2d').getImageData(0, 0, W, H).data, A = a ? a.getContext('2d').getImageData(0, 0, W, H).data : null;
+  const out = new Uint8Array(W * H * 4);
+  for (let i = 0; i < W * H * 4; i += 4) { out[i] = R[i + 3]; out[i + 1] = G[i + 3]; out[i + 2] = Bc[i + 3]; out[i + 3] = A ? A[i + 3] : 255; }
+  return { w: W, h: H, data: out };
+}
+
+/* ---------------------------------------------------------- the Nataraja */
+// Drawn from the Chola bronze pose (LACMA). Coordinates are in a 545x700 reference frame; the prabha centre is (275,300).
+const FIGW = 1024, FIGH = 1280, FS_ = 2.4, FCX = 512, FCY = 563;
+const FIG_RING = 215 * FS_ / FIGH;      // prabha radius as a fraction of the texture height
+const FIG_EYE = (FCY + (172 - 300) * FS_) / FIGH; // third eye, fraction from the top
+function buildFigure() {
+  const fc = mkCanvas(FIGW, FIGH), dc = mkCanvas(FIGW, FIGH);
+  const f = fc.getContext('2d'), d = dc.getContext('2d');
+  for (const c of [f, d]) { c.translate(FCX, FCY); c.scale(FS_, FS_); c.translate(-275, -300); c.fillStyle = c.strokeStyle = '#fff'; c.lineCap = 'round'; c.lineJoin = 'round'; }
+  const limb = (pts, w0, w1) => {
+    for (let i = 0; i < pts.length - 1; i++) {
+      const w = lerp(w0, w1, i / Math.max(1, pts.length - 2));
+      f.lineWidth = w; f.beginPath(); f.moveTo(pts[i][0], pts[i][1]); f.lineTo(pts[i + 1][0], pts[i + 1][1]); f.stroke();
+    }
+  };
+  const smooth = (c, pts, close) => {
+    c.beginPath();
+    const n = pts.length, m = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    let s = close ? m(pts[n - 1], pts[0]) : pts[0]; c.moveTo(s[0], s[1]);
+    for (let i = close ? 0 : 1; i < (close ? n : n - 1); i++) { const q = m(pts[i], pts[(i + 1) % n]); c.quadraticCurveTo(pts[i][0], pts[i][1], q[0], q[1]); }
+    if (!close) c.lineTo(pts[n - 1][0], pts[n - 1][1]); else c.closePath();
+  };
+  // jata: wavy matted locks flung out in a fan on both sides of the head, tied by a garland of blossoms
+  const hc = [276, 180];
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < 9; i++) {
+      const a0 = side < 0 ? (158 + i * 8.2) : (22 - i * 8.2);
+      const a = a0 * Math.PI / 180, r = 116 + (i % 2) * 9;
+      const nx = -Math.sin(a), ny = Math.cos(a);
+      const N = 22; let px = 0, py = 0;
+      for (let j = 0; j <= N; j++) {
+        const t = j / N, rr = 30 + (r - 30) * t;
+        const wv = Math.sin(t * Math.PI * 2.2 + i * 0.7) * 5.5 * t + side * 10 * t * t;
+        const x = hc[0] + Math.cos(a) * rr + nx * wv, y = hc[1] + Math.sin(a) * rr + ny * wv;
+        if (j) { f.lineWidth = lerp(8.5, 3.2, t); f.beginPath(); f.moveTo(px, py); f.lineTo(x, y); f.stroke(); }
+        px = x; py = y;
+      }
+      f.beginPath(); f.arc(px, py, 4.2, 0, TAU); f.fill();
+      d.lineWidth = 1.4; d.beginPath(); d.arc(px, py, 2.4, 0, TAU); d.stroke();
+    }
+    // garland arc and outer blossoms
+    f.lineWidth = 3; f.beginPath();
+    for (let i = 0; i <= 20; i++) {
+      const a = (side < 0 ? (156 + i * 3.6) : (24 - i * 3.6)) * Math.PI / 180, r = 98;
+      const x = hc[0] + Math.cos(a) * r, y = hc[1] + Math.sin(a) * r; i ? f.lineTo(x, y) : f.moveTo(x, y);
+    }
+    f.stroke();
+    for (let i = 0; i < 6; i++) {
+      const a = (side < 0 ? (165 + i * 12) : (15 - i * 12)) * Math.PI / 180;
+      const x = hc[0] + Math.cos(a) * 98, y = hc[1] + Math.sin(a) * 98;
+      f.beginPath(); f.arc(x, y, 5.5, 0, TAU); f.fill();
+      d.lineWidth = 1.2; d.beginPath(); for (let k = 0; k < 5; k++) { const b = k * TAU / 5; d.moveTo(x, y); d.lineTo(x + Math.cos(b) * 4.5, y + Math.sin(b) * 4.5); } d.stroke();
+    }
+  }
+  // jatamukuta (crown of matted hair)
+  smooth(f, [[277, 96], [268, 112], [263, 132], [258, 150], [252, 166], [300, 166], [294, 150], [289, 132], [285, 112]], true); f.fill();
+  f.beginPath(); f.arc(277, 95, 5, 0, TAU); f.fill();
+  // crescent moon tucked in the jata (viewer's left)
+  f.beginPath(); f.arc(248, 136, 13, 0, TAU); f.fill();
+  // face, neck, earrings
+  f.beginPath(); f.ellipse(276, 188, 21, 26, 0, 0, TAU); f.fill();
+  f.fillRect(266, 204, 20, 24);
+  f.beginPath(); f.arc(255, 200, 6, 0, TAU); f.arc(297, 200, 6, 0, TAU); f.fill();
+  // torso
+  smooth(f, [[248, 226], [304, 226], [318, 244], [306, 266], [298, 292], [292, 314], [302, 342], [250, 342], [260, 314], [254, 292], [246, 266], [234, 244]], true); f.fill();
+  f.beginPath(); f.arc(240, 245, 14, 0, TAU); f.arc(312, 245, 14, 0, TAU); f.fill();
+  // upper right (viewer's left): damru
+  limb([[238, 246], [172, 270], [138, 232]], 14, 11);
+  f.beginPath(); f.arc(136, 228, 8.5, 0, TAU); f.fill();
+  f.save(); f.translate(112, 198); f.rotate(-0.5);
+  f.beginPath(); f.moveTo(-15, -24); f.lineTo(15, -24); f.lineTo(2, 0); f.lineTo(15, 24); f.lineTo(-15, 24); f.lineTo(-2, 0); f.closePath(); f.fill();
+  f.beginPath(); f.ellipse(0, -24, 15, 4.5, 0, 0, TAU); f.ellipse(0, 24, 15, 4.5, 0, 0, TAU); f.fill();
+  f.lineWidth = 1.6; f.beginPath(); f.moveTo(0, 0); f.quadraticCurveTo(14, 6, 20, 2); f.moveTo(0, 0); f.quadraticCurveTo(-14, -6, -20, -2); f.stroke();
+  f.beginPath(); f.arc(21, 2, 3, 0, TAU); f.arc(-21, -2, 3, 0, TAU); f.fill();
+  f.restore();
+  // gajahasta: front left arm swung across the chest, hand drooping toward the raised foot
+  limb([[308, 252], [262, 270], [214, 280], [198, 312]], 12.5, 9);
+  f.save(); f.translate(195, 322); f.rotate(0.35); f.beginPath(); f.ellipse(0, 0, 6.5, 12, 0, 0, TAU); f.fill(); f.restore();
+  // upper left (viewer's right): agni in the palm
+  limb([[314, 248], [368, 288], [426, 258]], 14, 11);
+  f.beginPath(); f.arc(430, 252, 8.5, 0, TAU); f.fill();
+  f.beginPath(); f.moveTo(422, 246); f.bezierCurveTo(418, 230, 432, 222, 436, 206); f.bezierCurveTo(446, 222, 452, 232, 440, 246); f.closePath(); f.fill();
+  f.beginPath(); f.moveTo(424, 244); f.bezierCurveTo(414, 236, 418, 226, 420, 218); f.bezierCurveTo(428, 230, 430, 236, 430, 244); f.fill();
+  f.beginPath(); f.moveTo(440, 244); f.bezierCurveTo(452, 236, 452, 228, 452, 220); f.bezierCurveTo(444, 230, 440, 236, 436, 244); f.fill();
+  // abhaya: front right hand raised, palm out
+  limb([[306, 258], [350, 290], [352, 252]], 11.5, 9.5);
+  smooth(f, [[343, 256], [342, 240], [362, 240], [361, 256]], true); f.fill();
+  f.lineWidth = 4.2; for (let i = 0; i < 4; i++) { const x = 344.5 + i * 5; f.beginPath(); f.moveTo(x, 242); f.lineTo(x + (i - 1.5) * 0.8, 226 + Math.abs(i - 1.5) * 2.5); f.stroke(); }
+  f.lineWidth = 4.5; f.beginPath(); f.moveTo(342, 250); f.lineTo(334, 240); f.stroke();
+  // waist cloth
+  smooth(f, [[250, 318], [304, 318], [320, 350], [314, 374], [288, 366], [262, 374], [244, 350]], true); f.fill();
+  // flying sash
+  f.lineWidth = 8; f.beginPath(); f.moveTo(300, 306); f.bezierCurveTo(350, 294, 380, 336, 418, 326); f.bezierCurveTo(438, 320, 448, 312, 458, 318); f.stroke();
+  f.beginPath(); f.moveTo(458, 318); f.lineTo(468, 308); f.lineTo(466, 326); f.closePath(); f.fill();
+  // raised (kunchitapada) leg swung across to the viewer's left
+  limb([[290, 346], [252, 340], [206, 352]], 30, 23);
+  limb([[206, 352], [168, 362], [140, 372]], 21, 13);
+  f.lineWidth = 11; f.beginPath(); f.moveTo(142, 372); f.lineTo(110, 381); f.stroke();
+  // standing leg
+  limb([[292, 352], [258, 392], [226, 430]], 32, 23);
+  limb([[226, 430], [246, 470], [262, 506]], 22, 13);
+  f.lineWidth = 12; f.beginPath(); f.moveTo(258, 512); f.lineTo(300, 520); f.stroke();
+  // lotus pedestal
+  f.fillRect(206, 524, 132, 12);
+  for (let i = 0; i < 7; i++) { const x = 214 + i * 19; f.beginPath(); f.ellipse(x, 536, 11, 24, 0, 0, Math.PI); f.fill(); }
+
+  // gold detail lines: third eye, tripundra, necklace, armlets, belt, anklets, sash pleats, petals
+  d.lineWidth = 2.2;
+  d.beginPath(); d.ellipse(276, 188, 21, 26, 0, 0, TAU); d.stroke();                              // face outline
+  d.lineWidth = 1.6;
+  d.beginPath(); d.moveTo(265, 168); d.lineTo(287, 168); d.moveTo(264, 172); d.lineTo(288, 172); d.moveTo(265, 176); d.lineTo(287, 176); d.stroke(); // tripundra
+  d.lineWidth = 2.2;
+  d.beginPath(); d.ellipse(276, 172, 1.8, 4.2, 0, 0, TAU); d.fill();                               // third eye
+  d.beginPath(); d.arc(276, 212, 22, 0.35, Math.PI - 0.35); d.stroke();
+  d.beginPath(); d.arc(276, 206, 32, 0.45, Math.PI - 0.45); d.stroke();
+  d.beginPath(); d.moveTo(240, 236); d.quadraticCurveTo(276, 300, 312, 236); d.stroke();         // yajnopavita sacred thread
+  d.beginPath(); d.moveTo(250, 320); d.lineTo(304, 320); d.moveTo(248, 328); d.lineTo(306, 328); d.stroke();
+  d.beginPath(); d.arc(248, 136, 9, -0.6, 2.3); d.stroke();                                      // crescent
+  for (const [x, y] of [[196, 263], [347, 274], [215, 278], [338, 284], [148, 370], [258, 503]]) { d.beginPath(); d.arc(x, y, 5, 0, TAU); d.stroke(); }
+  d.beginPath(); d.moveTo(268, 112); d.lineTo(286, 112); d.moveTo(264, 130); d.lineTo(290, 130); d.moveTo(260, 148); d.lineTo(294, 148); d.stroke();
+  d.beginPath(); d.moveTo(436, 238); d.quadraticCurveTo(432, 228, 437, 216); d.stroke();
+  for (let i = 0; i < 7; i++) { const x = 214 + i * 19; d.beginPath(); d.ellipse(x, 536, 6, 15, 0, 0, Math.PI); d.stroke(); }
+  d.globalCompositeOperation = 'destination-in'; d.drawImage(fc, 0, 0); d.globalCompositeOperation = 'source-over';
+  // B: wide aura glow, A: tight blur for the rim light
+  const gc = mkCanvas(FIGW, FIGH), g = gc.getContext('2d'); g.filter = 'blur(26px)'; g.drawImage(fc, 0, 0); g.drawImage(fc, 0, 0);
+  const sc = mkCanvas(FIGW, FIGH), s = sc.getContext('2d'); s.filter = 'blur(5px)'; s.drawImage(fc, 0, 0);
+  return packRGB(fc, dc, gc, sc, FIGW, FIGH);
+}
+
+/* ------------------------------------------------------------------ webgl */
+const cv = $('c');
+const gl = cv.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
+const VS = `#version 300 es
+in vec2 p; void main(){ gl_Position = vec4(p, 0.0, 1.0); }`;
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 uRes;
+uniform float uTime, uZoom, uSpin, uDir, uBeat, uKick, uShock, uClap, uK, uE, uHat, uBright, uMode, uWide, uSideX, uFigH, uFig, uModeA;
+uniform vec2 uLurch;
+uniform sampler2D uAtlas, uFigT;
+uniform vec3 cDark, cDeep, cMain, cGold, cCream, cAcc, cCool;
+out vec4 o;
+#define TAU 6.28318531
+#define PI 3.14159265
+const float BW = ${BW.toFixed(3)};
+const float RING = ${FIG_RING.toFixed(4)};
+const float EYE = ${FIG_EYE.toFixed(4)};
+float hash(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
+  return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y); }
+
+// sprite id, cells per ring and vertical squash per band type
+// mode 1 order: flame, beads, trishul, serpent, moon, ganga waves, damru, om
+// mode 2 order: trishul, beads, damru, serpent, moon, bilva, flame, om
+void bandType(float t, float m, out float id, out float n, out float sy){
+  int k = int(t);
+  if (m < 1.5) {
+    if (k == 0) { id = 0.0; n = 30.0; sy = 1.0; }
+    else if (k == 1) { id = 2.0; n = 60.0; sy = 2.0; }
+    else if (k == 2) { id = 1.0; n = 28.0; sy = 1.0; }
+    else if (k == 3) { id = 3.0; n = 15.0; sy = 1.0; }
+    else if (k == 4) { id = 4.0; n = 30.0; sy = 1.0; }
+    else if (k == 5) { id = -1.0; n = 12.0; sy = 1.0; }
+    else if (k == 6) { id = 5.0; n = 30.0; sy = 1.0; }
+    else { id = 6.0; n = 28.0; sy = 1.0; }
+  } else {
+    if (k == 0) { id = 1.0; n = 28.0; sy = 1.0; }
+    else if (k == 1) { id = 2.0; n = 60.0; sy = 2.0; }
+    else if (k == 2) { id = 5.0; n = 30.0; sy = 1.0; }
+    else if (k == 3) { id = 3.0; n = 15.0; sy = 1.0; }
+    else if (k == 4) { id = 4.0; n = 30.0; sy = 1.0; }
+    else if (k == 5) { id = 7.0; n = 30.0; sy = 1.0; }
+    else if (k == 6) { id = 0.0; n = 30.0; sy = 1.0; }
+    else { id = 1.0; n = 40.0; sy = 1.0; }
+  }
+}
+vec4 sprite(float id, vec2 uv, float lod){
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return vec4(0.0);
+  vec2 cell = vec2(mod(id, 4.0), floor(id / 4.0));
+  vec2 t = (cell + vec2(clamp(uv.x, 0.004, 0.996), clamp(1.0 - uv.y, 0.004, 0.996))) / vec2(4.0, 2.0);
+  return textureLod(uAtlas, t, lod);
+}
+// one tunnel: concentric rings of symbols in log-polar space, alternating spin
+vec3 tunnel(vec2 p, float mirror, float kal, out float edgeMask){
+  float r = max(length(p), 1e-4);
+  float a = atan(p.y, p.x * mirror);
+  float lr = log(r);
+  float x = (lr - uZoom) / BW;
+  float band = floor(x), v = fract(x);
+  float type = mod(band, 8.0);
+  float id, n, sy; bandType(type, uMode, id, n, sy);
+  float dir = mod(band, 2.0) < 0.5 ? 1.0 : -1.0;
+  float spd = 0.55 + 0.11 * mod(band * 3.0, 5.0);
+  float ang = a / TAU + uSpin * dir * uDir * spd / n * 6.0;
+  if (kal > 0.5) {
+    // 12-fold kaleidoscope: mirror the wedge so the symbols reflect into a mandala
+    float seg = 1.0 / 12.0, w = fract(a / TAU / seg);
+    ang = (abs(w - 0.5) * seg) + uSpin * dir * uDir * spd / n * 6.0 + band * 0.037;
+  }
+  float cu = ang * n;
+  float cell = floor(cu), u = fract(cu);
+  float cellPx = r * uRes.y * TAU / n;
+  float lod = clamp(log2(512.0 / max(cellPx, 1.0)), 0.0, 5.0);
+  // band ground: alternating deep / dark with a soft vignette across the band
+  float alt = mod(band, 2.0);
+  float nz = vnoise(vec2(a * 3.0 + band * 7.1, band * 1.7 + uTime * 0.15));
+  vec3 ground = mix(cDark, cDeep, 0.35 + 0.45 * alt + 0.25 * nz);
+  ground *= 0.65 + 0.35 * sin(v * PI);
+  vec3 c = ground;
+  float kickF = uKick * min(uK, 1.4);
+  if (id < 0.0) {
+    // Ganga: rolling wave lines
+    float ph = u * TAU * 2.0 + uTime * 1.5 * dir;
+    float w1 = abs(fract(v * 3.0 + 0.16 * sin(ph)) - 0.5);
+    float line = smoothstep(0.12, 0.04, w1);
+    float crest = smoothstep(0.75, 1.0, sin(ph)) * smoothstep(0.2, 0.0, w1);
+    c = mix(c, mix(cCool, cCream, 0.25 + 0.4 * v), line * 0.9);
+    c += cCream * crest * 0.35;
+  } else {
+    vec2 uv = vec2(u, (v - 0.5) * sy + 0.5);
+    if (id == 0.0) uv.y = uv.y / (1.0 + 0.32 * kickF);           // flames flare outward on the kick
+    if (kal > 0.5 && mod(cell, 2.0) > 0.5) uv.x = 1.0 - uv.x;
+    vec4 s = sprite(id, uv, lod);
+    vec3 fillC, glowC;
+    if (id == 0.0) { fillC = mix(cAcc, cCream, smoothstep(0.1, 0.95, uv.y)); glowC = cAcc * (1.0 + 1.6 * kickF); }
+    else if (id == 1.0) { fillC = cGold; glowC = cAcc; }
+    else if (id == 2.0) { fillC = mix(cMain, cAcc, 0.35) * 0.95; glowC = cMain; }
+    else if (id == 3.0) { fillC = mix(cCool, cMain, 0.25); glowC = cCool; }
+    else if (id == 4.0) { fillC = cCream; glowC = cCool; }
+    else if (id == 5.0) { fillC = mix(cGold, cMain, 0.25); glowC = cAcc; }
+    else if (id == 6.0) { fillC = cGold; glowC = cAcc; }
+    else { fillC = mix(cCool, cGold, 0.35); glowC = cMain; }
+    c += glowC * s.b * (0.45 + 0.5 * uE);
+    c = mix(c, fillC, s.r);
+    c = mix(c, (id == 2.0 || id == 3.0) ? cGold : cCream, s.g * 0.85);
+  }
+  // fine gold rule at every band edge
+  float ePx = min(v, 1.0 - v) * BW * r * uRes.y;
+  c = mix(c, cGold, smoothstep(2.2, 0.6, ePx) * 0.8);
+  edgeMask = smoothstep(0.012, 0.05, r);
+  return c * edgeMask;
+}
+// prabha: ring of fire at radius R with flame tongues outward (and smaller inward)
+vec3 prabha(vec2 p, float R, vec3 c, float spinDir){
+  float r = length(p), a = atan(p.y, p.x);
+  float flare = uKick * min(uK, 1.4);
+  float n = 30.0;
+  float ang = a / TAU - uSpin * 0.05 * spinDir;
+  float cu = ang * n, u = fract(cu);
+  float hOut = R * (0.24 + 0.12 * flare), hIn = R * 0.10;
+  vec2 uvo = vec2(u, (r - R) / hOut);
+  float cellPx = r * uRes.y * TAU / n;
+  float lod = clamp(log2(512.0 / max(cellPx, 1.0)), 0.0, 5.0);
+  vec4 so = sprite(0.0, uvo, lod);
+  float cu2 = (ang + 0.5 / n) * n;
+  vec4 si = sprite(0.0, vec2(fract(cu2), (R - r) / hIn), lod);
+  vec3 fo = mix(cAcc, cCream, smoothstep(0.05, 0.9, uvo.y));
+  c += cAcc * so.b * (0.6 + 1.2 * flare);
+  c = mix(c, fo, so.r);
+  c = mix(c, cCream, so.g * 0.6);
+  c = mix(c, mix(cAcc, cGold, 0.5), si.r * 0.9);
+  // the ring itself: gold band with a row of beads and a serpent winding through it
+  float bandW = R * 0.035;
+  float d = abs(r - R);
+  float ringPx = d * uRes.y;
+  c = mix(c, cGold * 0.9, smoothstep(bandW * uRes.y + 1.0, bandW * uRes.y - 1.0, ringPx));
+  float bu = fract(ang * 90.0) - 0.5;
+  vec2 bq = vec2(bu * TAU * r / 90.0, r - R);
+  float bead = smoothstep(bandW * 0.8, bandW * 0.55, length(bq));
+  c = mix(c, mix(cMain, cAcc, 0.3), bead);
+  float sw = R + R * 0.06 * sin(a * 7.0 + uTime * 2.2 * spinDir);
+  float sd = abs(r - sw);
+  c = mix(c, mix(cCool, cCream, 0.15), smoothstep(R * 0.016, R * 0.009, sd));
+  c = mix(c, cGold, smoothstep(R * 0.004, 0.0, abs(sd - R * 0.006)) * 0.7);
+  return c;
+}
+void main(){
+  vec2 fcd = gl_FragCoord.xy;
+  vec2 ctr = 0.5 * uRes;
+  float punch = 1.0 + 0.035 * uBeat * min(uK, 1.4);
+  vec2 p = (fcd - ctr) / uRes.y / punch;          // H units, centre origin, y up
+  float aspect = uRes.x / uRes.y;
+  bool fig = uMode < 1.5;
+  float R = fig ? uFigH * RING : 0.30;            // prabha radius
+  vec2 pc = p - vec2(0.0, fig ? 0.0 : 0.0);
+  float rc = length(pc);
+  // which tunnel: centre, or (stage) the nearer side portal outside the central prabha
+  vec3 col; float em;
+  float outer = R * 1.32;
+  bool side = uWide > 0.5 && rc > outer;
+  vec2 lur = uLurch * uClap;
+  if (side) {
+    float sx = p.x < 0.0 ? -1.0 : 1.0;
+    vec2 q = p - vec2(sx * uSideX, 0.0) + lur;
+    col = tunnel(q, sx, uMode > 1.5 ? 1.0 : 0.0, em);
+    // Om glowing at each portal's eye
+    float lq = length(q);
+    vec2 ouv = q / (0.34) + 0.5;
+    vec4 om = sprite(6.0, vec2(ouv.x, ouv.y), 0.0);
+    float omA = smoothstep(0.2, 0.0, lq) ;
+    col = mix(col, cDark * 0.5, smoothstep(0.17, 0.08, lq));
+    col += cAcc * om.b * 0.9 * (0.7 + 0.6 * uKick);
+    col = mix(col, cGold, om.r * omA);
+    col = mix(col, cCream, om.g * omA * 0.6);
+    // seam: the portal is clipped by a gold rim around the centre
+    float seam = abs(rc - outer) * uRes.y;
+    col = mix(col, cGold, smoothstep(3.0, 0.5, seam) * 0.9);
+  } else {
+    col = tunnel(pc + lur, 1.0, uMode > 1.5 ? 1.0 : 0.0, em);
+  }
+  // shockwave on the kick, expanding with the tunnel
+  {
+    float rs = R * (1.05 + 2.4 * (1.0 - exp(-uShock * 3.2)));
+    float wv = exp(-uShock * 3.5) * step(0.0, uShock) * min(uK, 1.4);
+    float dd = abs(rc - rs) * uRes.y;
+    float th = 3.0 + 10.0 * rs;
+    col = mix(col, cCream, smoothstep(th, 0.0, dd) * wv * 0.8);
+    col += cAcc * smoothstep(th * 5.0, 0.0, dd) * wv * 0.35;
+  }
+  if (fig) {
+    // inside the prabha: dimmed tunnel washed by a warm aura so the figure reads as a clean silhouette
+    float inside = smoothstep(R * 1.02, R * 0.96, rc);
+    float aura = exp(-rc * rc / (R * R * 0.42));
+    vec3 auraC = mix(cAcc, cGold, 0.45 + 0.2 * uBeat);
+    col = mix(col, col * 0.35 + auraC * (0.32 + 0.38 * aura) + cCream * aura * aura * 0.18, inside);
+    col = prabha(pc, R, col, 1.0);
+    // figure
+    vec2 fuv = vec2(pc.x / uFigH * ${(FIGH / FIGW).toFixed(5)} + 0.5, ${(FCY / FIGH).toFixed(5)} - pc.y / uFigH);
+    if (fuv.x > 0.0 && fuv.x < 1.0 && fuv.y > 0.0 && fuv.y < 1.0) {
+      vec4 f = textureLod(uFigT, fuv, clamp(log2(${FIGH}.0 / (uFigH * uRes.y)), 0.0, 4.0));
+      float glowK = 0.55 + 0.6 * uBeat * min(uK, 1.4);
+      col += mix(cGold, cCream, 0.3) * f.b * (1.0 - f.r) * glowK * 0.55;     // halo around the silhouette
+      float rim = f.r * smoothstep(0.98, 0.55, f.a);
+      vec3 body = mix(cDark * 0.35, cDeep * 0.55, smoothstep(0.0, 1.0, fuv.y));
+      col = mix(col, body, f.r);
+      col = mix(col, mix(cGold, cCream, 0.35), rim * (0.75 + 0.25 * uBeat));
+      col = mix(col, cGold, f.g * 0.95);
+    }
+    // third eye: palette glow on the kick, never a white strobe
+    vec2 ep = pc - vec2(0.0, (${(FCY / FIGH).toFixed(5)} - EYE) * uFigH);
+    float eg = exp(-dot(ep * vec2(2.4, 1.0), ep * vec2(2.4, 1.0)) / (0.00005 * uFigH * uFigH));
+    float ew = exp(-dot(ep, ep) / (0.0007 * uFigH * uFigH));
+    col += cAcc * ew * (0.08 + 0.55 * uBeat * min(uK, 1.4)) + mix(cAcc, cCream, 0.45) * eg * (0.55 + 0.45 * uBeat);
+  } else {
+    // symbol mode: a clear dark disc for the show's centre logo, framed by a ring of fire, beads and a serpent
+    float disc = smoothstep(R * 0.98, R * 0.9, rc);
+    col = mix(col, col * 0.16 + cDark * 0.4 + cDeep * 0.12 * exp(-rc * rc / (R * R * 0.3)), disc);
+    col = prabha(pc, R, col, -1.0);
+  }
+  // mode crossfade from dark
+  col *= uModeA;
+  col *= uBright;
+  // vignette, softer on the wide stage
+  vec2 sp = fcd / uRes - 0.5;
+  col *= 1.0 - 0.22 * smoothstep(0.38, 0.85, length(sp * vec2(aspect > 2.0 ? 0.55 : 1.0, 1.0)));
+  o = vec4(min(col, vec3(1.0)), 1.0);
+}`;
+
+// embers: additive points
+const PVS = `#version 300 es
+in vec4 a; // x, y (H units), life 0..1, size px
+uniform vec2 uRes;
+out float vL;
+void main(){ vL = a.z; gl_Position = vec4(a.x * 2.0 * uRes.y / uRes.x, a.y * 2.0, 0.0, 1.0); gl_PointSize = a.w; }`;
+const PFS = `#version 300 es
+precision mediump float;
+in float vL;
+uniform vec3 cA, cB;
+out vec4 o;
+void main(){ vec2 d = gl_PointCoord - 0.5; float r = length(d); float s = smoothstep(0.5, 0.0, r); s *= s;
+  vec3 c = mix(cA, cB, smoothstep(0.35, 1.0, vL)); o = vec4(c * s * vL * 0.9, 1.0); }`;
+
+let prog = null, pprog = null, U = {}, PU = {}, vao = null, pvao = null, pbuf = null, texA = null, texF = null;
+function compile(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+function link(vs, fs, attr) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs)); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.bindAttribLocation(p, 0, attr); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+function upload(img) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, img.w, img.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, img.data);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+let ATLAS = null, FIGIMG = null;
+function initGL() {
+  prog = link(VS, FS, 'p');
+  gl.useProgram(prog);
+  vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  for (const n of ['uRes', 'uTime', 'uZoom', 'uSpin', 'uDir', 'uBeat', 'uKick', 'uShock', 'uClap', 'uK', 'uE', 'uHat', 'uBright', 'uMode', 'uWide', 'uSideX', 'uFigH', 'uFig', 'uModeA', 'uLurch', 'uAtlas', 'uFigT', 'cDark', 'cDeep', 'cMain', 'cGold', 'cCream', 'cAcc', 'cCool'])
+    U[n] = gl.getUniformLocation(prog, n);
+  if (!ATLAS) ATLAS = buildAtlas();
+  if (!FIGIMG) FIGIMG = buildFigure();
+  gl.activeTexture(gl.TEXTURE0); texA = upload(ATLAS);
+  gl.activeTexture(gl.TEXTURE1); texF = upload(FIGIMG);
+  gl.uniform1i(U.uAtlas, 0); gl.uniform1i(U.uFigT, 1);
+  pprog = link(PVS, PFS, 'a');
+  for (const n of ['uRes', 'cA', 'cB']) PU[n] = gl.getUniformLocation(pprog, n);
+  pvao = gl.createVertexArray(); gl.bindVertexArray(pvao);
+  pbuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, pbuf);
+  gl.bufferData(gl.ARRAY_BUFFER, PMAX * 16, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+  setPal();
+}
+function setPal() {
+  const p = P();
+  gl.useProgram(prog);
+  gl.uniform3fv(U.cDark, hex3(p.dark)); gl.uniform3fv(U.cDeep, hex3(p.deep)); gl.uniform3fv(U.cMain, hex3(p.main));
+  gl.uniform3fv(U.cGold, hex3(p.gold)); gl.uniform3fv(U.cCream, hex3(p.cream)); gl.uniform3fv(U.cAcc, hex3(p.acc)); gl.uniform3fv(U.cCool, hex3(p.cool));
+  gl.useProgram(pprog);
+  gl.uniform3fv(PU.cA, hex3(p.acc)); gl.uniform3fv(PU.cB, hex3(p.cream));
+  document.body.style.background = p.dark;
+}
+const SCALE = clamp(parseFloat(Q.get('scale')) || 1, 0.25, 2);
+const STAGE = Q.get('screen') === 'stage';
+let W = 0, H = 0, WIDE = false;
+function resize() {
+  W = Math.max(1, Math.round(innerWidth * SCALE)); H = Math.max(1, Math.round(innerHeight * SCALE));
+  cv.width = W; cv.height = H; gl.viewport(0, 0, W, H);
+  WIDE = STAGE || W / H > 2.5;
+}
+addEventListener('resize', resize);
+cv.addEventListener('webglcontextlost', e => e.preventDefault());
+cv.addEventListener('webglcontextrestored', () => { initGL(); resize(); });
+
+/* ----------------------------------------------------------------- embers */
+const PMAX = 1400;
+const parts = [];
+const pdata = new Float32Array(PMAX * 4);
+function emberRadius() { return MODE === 1 ? figH() * FIG_RING : 0.30; }
+function spawn(n, fast) {
+  const R = emberRadius();
+  for (let i = 0; i < n && parts.length < PMAX; i++) {
+    const a = Math.random() * TAU;
+    let cx = 0;
+    if (WIDE && Math.random() < 0.55) cx = (Math.random() < 0.5 ? -1 : 1) * sideX();
+    const r0 = cx ? 0.05 + Math.random() * 0.1 : R * (1.0 + Math.random() * 0.25);
+    const sp = (fast ? 0.55 : 0.25) + Math.random() * (fast ? 0.9 : 0.45);
+    const sw = (Math.random() * 0.6 + 0.2) * T.dirS;
+    parts.push({ x: cx + Math.cos(a) * r0, y: Math.sin(a) * r0, vx: Math.cos(a) * sp - Math.sin(a) * sw * sp, vy: Math.sin(a) * sp + Math.cos(a) * sw * sp,
+      life: 1, dec: 0.5 + Math.random() * 0.9, size: (2.5 + Math.random() * 4.5) });
+  }
+}
+function burst(n) { spawn(Math.round(n), true); }
+let spawnAcc = 0;
+function stepParts(dt) {
+  spawnAcc += dt * (8 + 160 * clamp(LV.hat, 0, 1.2) * T.K);
+  const n = Math.floor(spawnAcc); spawnAcc -= n; spawn(n, false);
+  let k = 0;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const q = parts[i];
+    q.life -= q.dec * dt; q.x += q.vx * dt; q.y += q.vy * dt; q.vx *= 1 - 0.6 * dt; q.vy *= 1 - 0.6 * dt; q.vy += 0.06 * dt;
+    if (q.life <= 0) { parts[i] = parts[parts.length - 1]; parts.pop(); continue; }
+  }
+  const px = Math.max(1, H / 720);
+  for (const q of parts) { pdata[k++] = q.x; pdata[k++] = q.y; pdata[k++] = q.life; pdata[k++] = q.size * px * (0.6 + 0.4 * q.life); }
+  return parts.length;
+}
+
+/* ----------------------------------------------------------------- render */
+// texture height in H units (the figure itself is ~86% of it)
+function figH() { return WIDE ? 1.0 : (W / H < 1.3 ? 0.85 : 0.95); }
+function sideX() { const R = (MODE === 1 ? figH() * FIG_RING : 0.30) * 1.32; return (R + W / H / 2) / 2 + 0.05; }
+function render(now, dt) {
+  T.eS = lerp(T.eS, clamp(LV.energy, 0, 1.3), 1 - Math.exp(-dt / 0.8));
+  const e = T.eS, K = T.K;
+  T.dirS = lerp(T.dirS, T.dir, 1 - Math.exp(-dt / 0.09));
+  T.spin += (0.12 + 0.42 * e * K) * (B.bpm / 128) * dt;
+  if (T.spin > 1e4) T.spin -= 1e4;
+  // continuous drift into the tunnel, faster when loud
+  T.drift += (0.02 + 0.09 * e * K) * dt;
+  if (T.drift > 8 * BW * 50) T.drift -= 8 * BW * 50;
+  const bt = punchEnv(now - B.lastBeat);
+  const kick = Math.exp(-Math.max(0, now - B.lastBeat) * 5.5);
+  const clapE = Math.exp(-Math.max(0, now - T.clapT) * 4.0);
+  const bright = clamp(0.82 + 0.2 * e + 0.05 * bt * K, 0.75, 1.06);
+  const mA = clamp((now - T.modeT) / 0.5, 0, 1);
+  gl.useProgram(prog); gl.bindVertexArray(vao);
+  gl.uniform2f(U.uRes, W, H); gl.uniform1f(U.uTime, now % 1000);
+  gl.uniform1f(U.uZoom, zoomNow(now) + T.drift); gl.uniform1f(U.uSpin, T.spin); gl.uniform1f(U.uDir, T.dirS);
+  gl.uniform1f(U.uBeat, bt); gl.uniform1f(U.uKick, kick); gl.uniform1f(U.uShock, now - B.lastBeat); gl.uniform1f(U.uClap, clapE);
+  gl.uniform1f(U.uK, K); gl.uniform1f(U.uE, clamp(e, 0, 1.2)); gl.uniform1f(U.uHat, LV.hat); gl.uniform1f(U.uBright, bright);
+  gl.uniform1f(U.uMode, MODE); gl.uniform1f(U.uWide, WIDE ? 1 : 0); gl.uniform1f(U.uSideX, sideX()); gl.uniform1f(U.uFigH, figH());
+  gl.uniform1f(U.uModeA, mA * mA * (3 - 2 * mA)); gl.uniform2f(U.uLurch, T.lurchX, T.lurchY);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const n = stepParts(dt);
+  if (n) {
+    gl.useProgram(pprog); gl.bindVertexArray(pvao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, pbuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, pdata, 0, n * 4);
+    gl.uniform2f(PU.uRes, W, H);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+    gl.drawArrays(gl.POINTS, 0, n);
+    gl.disable(gl.BLEND);
+  }
+  gl.bindVertexArray(null);
+}
+
+/* ------------------------------------------------------------------ keys */
+let hudOn = !EMBED && Q.get('hud') === '1';
+addEventListener('keydown', (ev) => {
+  const k = ev.key, now = performance.now() / 1000;
+  if (!started && (k === ' ' || k === 'Enter')) { begin(); ev.preventDefault(); return; }
+  if (k === 'p' || k === 'P') { palIdx = (palIdx + 1) % PALS.length; setPal(); }
+  else if (k === 'f' || k === 'F') toggleFS();
+  else if (k === 't' || k === 'T') tap(now);
+  else if (k === 'h' || k === 'H') hudOn = !hudOn;
+  else if (k === 'l' || k === 'L') $('logo').classList.toggle('on');
+  else if (k === 'i' || k === 'I') nextInput();
+  else if (k === '1' || k === '2') setMode(+k);
+  else if (k === 'ArrowUp') T.K = Math.min(1.8, T.K + .15);
+  else if (k === 'ArrowDown') T.K = Math.max(.3, T.K - .15);
+  else return;
+  ev.preventDefault();
+});
+function toggleFS() { if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {}); else document.exitFullscreen(); }
+let started = false;
+function begin() {
+  if (started) return; started = true; $('start').classList.add('gone'); document.body.classList.add('run');
+  if (DEMO && !EMBED) { if (ac) ac.resume(); return; }
+  if (!EMBED && !document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
+  if (EMBED) { startEmbed(); return; }
+  startMic();
+}
+// embed: reuse the parent's AudioContext + stream (or its analyser); never open our own mic
+function startEmbed() {
+  const vr = window.parent.__vr;
+  if (vr.analyser && !vr.stream) {
+    ac = vr.ctx || vr.analyser.context; analyser = vr.analyser;
+    fd = new Uint8Array(analyser.frequencyBinCount); prevMag = new Float32Array(analyser.frequencyBinCount);
+    srcNode = { disconnect() {} }; audioNote = 'embed: parent analyser';
+    return;
+  }
+  initCtx();
+  try { srcNode = ac.createMediaStreamSource(vr.stream); srcNode.connect(analyser); audioNote = 'embed: parent stream'; }
+  catch (e) { audioNote = 'embed: no stream, auto beat'; }
+}
+$('start').addEventListener('click', begin);
+addEventListener('click', () => { if (ac && ac.state !== 'running' && !EMBED) ac.resume(); });
+
+/* ------------------------------------------------------------------ loop */
+let last = performance.now() / 1000, hudN = 0;
+window.__ft = [];
+window.__state = () => ({ sinceBeat: performance.now() / 1000 - B.lastBeat, sinceClap: performance.now() / 1000 - T.clapT, beats: B.count, claps: B.claps, src: B.src, bpm: B.bpm, energy: LV.energy, hat: LV.hat, mode: MODE, wide: WIDE, embers: parts.length, audio: audioNote, ac: ac && ac.state });
+window.__bench = (n) => { const px = new Uint8Array(4); const t0 = performance.now(); for (let i = 0; i < n; i++) { render(performance.now() / 1000, 1 / 60); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); } return (performance.now() - t0) / n; };
+// the show reads __vrStatus(); add the layout so phones can mark the chosen chip
+if (typeof window.__vrStatus === 'function') { const prev = window.__vrStatus; window.__vrStatus = () => Object.assign(prev(), { mode: MODE }); }
+const statusObj = { bpm: 128, beatT: 0, level: 0, mode: MODE };
+function frame() {
+  const now = performance.now() / 1000, dt = clamp(now - last, 0, 0.1);
+  window.__ft.push((now - last) * 1000); if (window.__ft.length > 1200) window.__ft.shift();
+  last = now;
+  analyse(now, dt); clock(now);
+  render(now, dt);
+  statusObj.bpm = B.bpm; statusObj.beatT = B.lastBeat; statusObj.level = LV.energy; statusObj.mode = MODE;
+  if (typeof window.__vrStatus === 'function') Object.assign(window.__vrStatus, statusObj); else window.__vrStatus = statusObj;
+  if (hudOn && (hudN++ % 6 === 0)) {
+    const ft = window.__ft.slice(-60), avg = ft.reduce((x, y) => x + y, 0) / ft.length;
+    $('hud').style.display = 'block';
+    $('hud').textContent = `bpm     ${B.bpm.toFixed(1)}  src ${B.src}  beat ${B.count}\nclaps   ${B.claps}  spin ${T.dir > 0 ? 'cw' : 'ccw'}\nenergy  ${bar(LV.energy)}\nhats    ${bar(LV.hat)}\nmode    ${MODE} ${MODE === 1 ? 'Nataraja' : 'Symbols'}${WIDE ? '  stage' : ''}  embers ${parts.length}\npalette ${P().name}   intensity ${T.K.toFixed(2)}\naudio   ${audioNote}\nsize    ${W}x${H}  ${avg.toFixed(1)} ms/frame`;
+  } else if (!hudOn) $('hud').style.display = 'none';
+  requestAnimationFrame(frame);
+}
+function bar(v) { const n = Math.round(clamp(v, 0, 1) * 20); return '#'.repeat(n) + '.'.repeat(20 - n) + ' ' + v.toFixed(2); }
+
+if (!gl) { $('err').style.display = 'flex'; }
+else {
+  try { resize(); initGL(); } catch (e) { $('err').textContent = 'Shader error: ' + e.message; $('err').style.display = 'flex'; console.error(e); }
+  B.next = performance.now() / 1000 + 0.3;
+  T.modeT = performance.now() / 1000 - 1;
+  if (EMBED) begin();
+  else if (DEMO) { started = true; $('start').classList.add('gone'); startDemo(); }
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>
