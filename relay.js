@@ -37,7 +37,11 @@
     // never meet, so we publish to every connected broker and subscribe on all (ids dedupe).
     var clients = BROKERS.map(function (url) { return { url: url, c: null, up: false }; });
     function upd() { connected = clients.some(function (x) { return x.up; }); broker = clients.filter(function (x) { return x.up; }).map(function (x) { return x.url.split('/')[2]; }).join(' + '); if (api.onConn) api.onConn(connected); }
+    // Offline: stay quiet (no reconnect storm), pick up again when the laptop is back online.
+    function whenOnline(slot) { if (slot.wait) return; slot.wait = true; addEventListener('online', function f() { removeEventListener('online', f); slot.wait = false; connect(slot); }); }
     function connect(slot) {
+      if (window.VR_OFFLINE_BUILD) return; // single-file offline build: no phone control
+      if (navigator.onLine === false) { whenOnline(slot); return; }
       if (typeof mqtt === 'undefined') { setTimeout(function () { connect(slot); }, 3000); return; }
       var c;
       try {
@@ -46,7 +50,7 @@
       slot.c = c;
       c.on('connect', function () { slot.up = true; c.subscribe(inTopic, { qos: 0 }); upd(); });
       c.on('message', function (t, buf) { try { deliver(JSON.parse(buf.toString()), 'mqtt'); } catch (e) {} });
-      c.on('offline', function () { slot.up = false; upd(); });
+      c.on('offline', function () { slot.up = false; upd(); if (navigator.onLine === false) { try { c.end(true); } catch (e) {} whenOnline(slot); } });
       c.on('close', function () { slot.up = false; upd(); });
       c.on('error', function () {});
     }

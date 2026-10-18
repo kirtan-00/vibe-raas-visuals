@@ -36,6 +36,10 @@ body.stage #cbox img{filter:drop-shadow(0 0 2.2vh rgba(0,0,0,.55))}
 .pick button.sel{border-color:#e9c783;background:#8e0f1c;color:#fff}
 .pick button.sel small{color:#f6e7c8}
 #role{font:500 13px/1.4 system-ui,sans-serif;color:#b9895a;letter-spacing:.1em}
+#keys{font:500 12px/1.7 system-ui,sans-serif;color:#b9895a;letter-spacing:.04em;text-align:center;max-width:92vw}
+#keys kbd{font:inherit;color:#e9c783;border:1px solid #6b4a2e;border-radius:4px;padding:0 5px;margin:0 2px}
+#offl{font:500 12px/1.4 system-ui,sans-serif;color:#6b4a2e;letter-spacing:.06em;min-height:1.4em}
+#offl.ok{color:#7fbf7f}
 </style>
 </head>
 <body>
@@ -43,7 +47,9 @@ body.stage #cbox img{filter:drop-shadow(0 0 2.2vh rgba(0,0,0,.55))}
 <div id="clogo" aria-hidden="true"><div id="cdisc"></div><div id="cbox">
  <img data-l="vibe" src="img/logo_gold.png" alt=""><img data-l="tribe" src="img/tribe_gold.svg" alt=""><img data-l="sach" src="img/sach_gold.svg" alt=""><img data-l="clapper" src="img/clapper.svg" alt="">
 </div></div>
-<div id="go"><div class="pick" id="pick"><button data-s="side">Side screen<small>1920x1200 / 1200x750</small></button><button data-s="stage">Stage screen<small>3000x720</small></button></div><span id="gospan">Pick this window's screen to start</span><div id="role"></div><div class="pair" id="pair1"></div></div>
+<div id="go"><div class="pick" id="pick"><button data-s="side">Side screen<small>1920x1200 / 1200x750</small></button><button data-s="stage">Stage screen<small>3000x720</small></button></div><span id="gospan">Pick this window's screen to start</span><div id="role"></div><div class="pair" id="pair1"></div>
+<div id="keys"><kbd>1</kbd>Tunnel <kbd>2</kbd>Stripes <kbd>3</kbd>Mandala <kbd>4</kbd>Ghoomar <kbd>5</kbd>Patola <kbd>6</kbd>Jali <kbd>7</kbd>Damru <kbd>8</kbd>Shiv &nbsp;&middot;&nbsp; <kbd>C</kbd>colour <kbd>L</kbd>logo <kbd>F</kbd>fullscreen <kbd>Q</kbd>phone code <kbd>&uarr;</kbd><kbd>&darr;</kbd>intensity <kbd>T</kbd>tap tempo</div>
+<div id="offl"></div></div>
 <div id="pairov"><div class="pair" id="pair2"></div></div>
 <script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
@@ -96,7 +102,7 @@ document.getElementById('pair1').innerHTML = pairHTML();
 document.getElementById('pair2').innerHTML = pairHTML();
 const pov = document.getElementById('pairov');
 pov.addEventListener('click', e => { e.stopPropagation(); pov.classList.remove('on'); });
-window.__vrKey = k => { if (k === 'q' || k === 'Q') pov.classList.toggle('on'); else if (k === 'f' || k === 'F') fs(); else if (k === 'l' || k === 'L') cycleLogo(); };
+window.__vrKey = k => showKey(k); // keys pressed while the visual iframe has focus land here (vr-embed.js)
 let ctx = null, analyser = null, stream = null, src = null, td = null, deviceId = Q.get('dev') || '', note = 'not started';
 window.__vrPal = null; window.__vrK = 1;
 
@@ -166,17 +172,54 @@ async function start() {
 }
 function load(v) {
   if (!VIS[v]) return;
-  cur = v; fr.src = VIS[v] + (v === 'raas' ? '&mode=' + rMode : '') + '&screen=' + SCREEN + '&t=' + Date.now();
+  cur = v;
+  const src = VIS[v] + (v === 'raas' ? '&mode=' + rMode : '') + '&screen=' + SCREEN + '&t=' + Date.now();
+  if (window.VR_BUNDLE) { // offline single-file build: every visual is inlined, loaded as srcdoc (same origin under file://)
+    const i = src.indexOf('?'), dir = src.slice(0, i).replace(/\/$/, '');
+    fr.removeAttribute('src');
+    const qs = '<script>window.__VRQS=' + JSON.stringify(src.slice(i)) + '<\/script>';
+    fr.srcdoc = window.VR_BUNDLE[dir].replace('<head>', () => '<head>' + qs); // after the doctype, so no quirks mode
+  } else fr.src = src;
   url();
+  try { fr.blur(); window.focus(); } catch (e) {} // keep keyboard focus on the show, not inside the visual
 }
 setScreen(SCREEN);
 document.querySelectorAll('#pick button').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); setScreen(b.dataset.s); start(); }));
 go.addEventListener('click', start);
+// Operator keyboard: 1-8 visual, C colour, L logo, F fullscreen, Q pairing code, Up/Down intensity, T or Space tap tempo.
+// Same command path as the phone (onCmd), so phones see keyboard changes in the status.
+const PALS = ['Kumkum', 'Haldi', 'Mor', 'Raat'];
+function showKey(k) {
+  if (/^[1-8]$/.test(k)) {
+    const v = Object.keys(VIS)[+k - 1];
+    if (!v) return true;
+    if (ctx) onCmd({ type: 'visual', v: v }); else { cur = v; url(); }
+    status(true); return true;
+  }
+  const u = k.length === 1 ? k.toLowerCase() : k;
+  if (u === 'c' || u === 'p') {
+    // the show's chosen palette wins (a visual still loading may briefly report its default)
+    let p = window.__vrPal; const w = cw();
+    if (!p) { try { if (w && w.__vrStatus) p = w.__vrStatus().pal; } catch (e) {} }
+    p = PALS.includes(p) ? p : PALS[0];
+    onCmd({ type: 'pal', name: PALS[(PALS.indexOf(p) + 1) % PALS.length] }); status(true); return true;
+  }
+  if (u === 'l') { cycleLogo(); return true; }
+  if (u === 'f') { fs(); return true; }
+  if (u === 'q') { pov.classList.toggle('on'); return true; }
+  if (!ctx) return false;
+  if (u === 'ArrowUp' || u === 'ArrowDown') {
+    const k0 = +window.__vrK || 1, n = Math.max(0.3, Math.min(1.8, Math.round((k0 + (u === 'ArrowUp' ? 0.15 : -0.15)) * 100) / 100));
+    onCmd({ type: 'k', value: n }); status(true); return true;
+  }
+  if (u === 't' || u === ' ') { onCmd({ type: 'tap' }); return true; }
+  return false;
+}
 addEventListener('keydown', e => {
-  if (!ctx && (e.key === ' ' || e.key === 'Enter')) { start(); return; }
-  if (e.key === 'f' || e.key === 'F') fs();
-  if (e.key === 'q' || e.key === 'Q') pov.classList.toggle('on');
-  if (e.key === 'l' || e.key === 'L') cycleLogo();
+  if (e.metaKey || e.ctrlKey || e.altKey) return; // leave browser shortcuts (Cmd+R, Cmd+L...) alone
+  if (!ctx && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); start(); return; }
+  if (e.repeat && e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+  if (showKey(e.key)) e.preventDefault();
 });
 function fs() { if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {}); else document.exitFullscreen().catch(() => {}); }
 addEventListener('dblclick', fs);
@@ -221,6 +264,30 @@ function status(force) {
     level: level(), pal: st ? st.pal : window.__vrPal, K: st ? st.K : window.__vrK, logo: logo, mode: rMode, ctrls: ctrlCount(), audio: note, dev: deviceId, devs: devs, fs: !!document.fullscreenElement }, net);
 }
 setInterval(status, 100);
+
+// Offline: service worker precaches the whole site on first visit. The start screen says when it is safe to lose internet.
+(function () {
+  const el = document.getElementById('offl');
+  if (window.VR_BUNDLE) { el.textContent = 'Offline build: no internet needed'; el.className = 'ok'; return; }
+  if (!('serviceWorker' in navigator) || !/^https?:$/.test(location.protocol)) return;
+  el.textContent = 'Saving for offline...';
+  navigator.serviceWorker.register('sw.js').catch(() => { el.textContent = 'Offline save failed: keep internet on'; });
+  let tries = 0;
+  async function check() {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const r = await new Promise((res, rej) => {
+        const ch = new MessageChannel(); ch.port1.onmessage = e => res(e.data);
+        (reg.active || navigator.serviceWorker.controller).postMessage({ type: 'check' }, [ch.port2]);
+        setTimeout(() => rej(new Error('timeout')), 4000);
+      });
+      if (r.ok) { el.textContent = 'Offline ready: ' + r.cached + ' files saved'; el.className = 'ok'; return; }
+      el.textContent = 'Not cached yet: ' + r.cached + ' of ' + r.total + ' files';
+    } catch (e) { el.textContent = 'Not cached yet'; }
+    if (++tries < 90) setTimeout(check, 2000);
+  }
+  check();
+})();
 </script>
 </body>
 </html>

@@ -298,5 +298,6 @@ setInterval(hello, 3000);
 hello(); send({ type: 'ping' });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { hello(); send({ type: 'ping' }); } });
 </script>
+<script>if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(() => {});</script>
 </body>
 </html>

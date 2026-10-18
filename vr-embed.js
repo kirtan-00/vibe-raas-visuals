@@ -7,12 +7,14 @@
    and exposes window.__vrCmd / window.__vrStatus for the show window. */
 (function () {
   'use strict';
-  var Q = new URLSearchParams(location.search);
+  var Q = new URLSearchParams(window.__VRQS || location.search); // __VRQS: query string injected by the offline single-file build (srcdoc has no search)
   window.VR_SCREEN = Q.get('screen') === 'stage' ? 'stage' : 'side';
   var VR = null;
   try { if (window.parent !== window && window.parent.__vr) VR = window.parent.__vr; } catch (e) {}
   if (!VR && Q.get('embed') !== '1') return;
   document.documentElement.classList.add('vr-embed');
+  // the visual never goes fullscreen itself (the show page does); avoids permissions-policy console errors
+  try { Element.prototype.requestFullscreen = function () { return Promise.reject(new DOMException('show page owns fullscreen', 'NotAllowedError')); }; } catch (e) {}
   var st = document.createElement('style');
   st.textContent = 'html.vr-embed #start{display:none!important}html.vr-embed body{cursor:none}html.vr-embed #logo{display:none!important}'; // the show draws the centre logo
   document.head.appendChild(st);
@@ -49,13 +51,19 @@
     var o = kObj();
     return { bpm: B.bpm, beats: B.count, energy: (typeof LV !== 'undefined' ? LV.energy : 0), pal: P().name, K: o ? o.K : 1 };
   };
-  // Q (pairing code), L (centre logo) and F (fullscreen) act on the show page even when the iframe has focus.
+  // Show keys act on the show page even when the iframe has focus, and the visual never sees them:
+  // 1-8 visual, C/P colour, L logo, F fullscreen, Q pairing, Up/Down intensity, T/Space tap.
+  // Capture phase on window runs before the visual's own keydown handler (so stripes/shiv 1/2 never fire).
+  // Synthetic (untrusted) keys from __vrCmd (palette 'p', tap 't', raas mode digits) still reach the visual.
   // The iframe itself is not allowed fullscreen, else it would cover the show's centre logo.
+  var SHOWKEY = /^([1-8cCpPlLfFqQtT ]|ArrowUp|ArrowDown)$/;
   addEventListener('dblclick', function () { try { window.parent.__vrKey && window.parent.__vrKey('f'); } catch (x) {} });
   addEventListener('keydown', function (e) {
-    if (!e.isTrusted) return;
-    if (e.key === 'q' || e.key === 'Q' || e.key === 'l' || e.key === 'L' || e.key === 'f' || e.key === 'F') { try { window.parent.__vrKey && window.parent.__vrKey(e.key); } catch (x) {} }
-  });
+    if (!e.isTrusted || e.metaKey || e.ctrlKey || e.altKey || !SHOWKEY.test(e.key)) return;
+    e.stopImmediatePropagation(); e.preventDefault();
+    if (e.repeat && e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    try { window.parent.__vrKey && window.parent.__vrKey(e.key); } catch (x) {}
+  }, true);
   addEventListener('pagehide', function () {
     try { if (srcNode) srcNode.disconnect(); } catch (e) {}
     try { if (analyser) analyser.disconnect(); } catch (e) {}
