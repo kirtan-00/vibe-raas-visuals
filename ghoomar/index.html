@@ -316,7 +316,7 @@ function layout() {
     const n = asp < 5.5 ? 3 : 5, sp = W / n;
     for (let i = 0; i < n; i++) {
       const k = i - (n - 1) / 2, main = k === 0;
-      const R = main ? Math.min(H * 0.43, sp * 0.4) : Math.min(H * 0.34, sp * 0.33);
+      const R = main ? Math.min(H * 0.44, sp * 0.4) : Math.min(H * 0.41, sp * 0.37); // wide (stage): side wheels nearly as big as the centre
       DANCERS.push({ cx: W / 2 + k * sp, cy: H / 2, R, dir: Math.abs(k) % 2 ? -1 : 1, ph: k * 0.37, delay: Math.abs(k) * 0.07 });
     }
   }

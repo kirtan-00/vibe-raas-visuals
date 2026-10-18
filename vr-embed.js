@@ -1,9 +1,14 @@
+/* WIDE LAYOUT HINT for visuals: show.html loads every visual as
+   <folder>/?embed=1&screen=stage|side. 'stage' = the 3000x720 (25:6) big LED, 'side' = 16:10 side LEDs.
+   Read it as window.VR_SCREEN (set below), or just test W / H > 2.5 as a fallback, and use a wide layout
+   (tile or repeat across the width, size things by height). Leave the 16:10 layout as it is. */
 /* Vibe Raas: embed bridge. When a visual runs inside show.html it reuses the
    parent's running AudioContext + mic stream, skips its start screen and HUD,
    and exposes window.__vrCmd / window.__vrStatus for the show window. */
 (function () {
   'use strict';
   var Q = new URLSearchParams(location.search);
+  window.VR_SCREEN = Q.get('screen') === 'stage' ? 'stage' : 'side';
   var VR = null;
   try { if (window.parent !== window && window.parent.__vr) VR = window.parent.__vr; } catch (e) {}
   if (!VR && Q.get('embed') !== '1') return;

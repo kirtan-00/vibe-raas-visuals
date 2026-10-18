@@ -24,6 +24,17 @@ h2{font-family:"Rozha";font-weight:400;font-size:20px;color:var(--gold);margin-b
 button{font:inherit;font-size:18px;color:var(--cream);background:var(--deep);border:3px solid var(--dim);border-radius:12px;min-height:70px;padding:10px;cursor:pointer;touch-action:manipulation}
 button:hover{border-color:var(--gold)}
 button.sel{border-color:var(--gold);background:var(--red);color:#fff}
+button.part{border-style:dashed;border-color:var(--gold)}
+#tgtsec{border:3px solid var(--gold)}
+#tgt{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+#tgt button{min-height:60px;font-size:18px}
+#tgt button small{display:block;font-size:12px;color:var(--dim);letter-spacing:.04em}
+#tgt button.sel small{color:var(--cream)}
+#scr{margin-top:10px;font-size:15px;line-height:1.5;color:var(--cream)}
+#scr b{color:var(--gold);font-weight:500}
+#scr .none{color:#ff8a6a}
+#nlive{font-size:13px;color:var(--gold);letter-spacing:.04em}
+.mic{display:grid;gap:6px;margin-bottom:10px}.mic label{font-size:14px;color:var(--gold)}
 .chip{display:flex;align-items:center;gap:10px;justify-content:center}
 .chip i{width:34px;height:34px;border-radius:8px;border:2px solid rgba(255,255,255,.4)}
 #tap{min-height:130px;font-size:30px;font-family:"Rozha";color:var(--gold);width:100%}
@@ -79,8 +90,15 @@ body.nojoin #join{display:block}body.nojoin .wrap{display:none}
   <h1>Vibe Raas Control</h1>
   <div class="stat">BPM<b id="bpm">&middot;</b></div>
   <div class="stat">Input<div id="lvl"><i></i></div></div>
-  <div class="meta"><span class="pill off" id="pill">Offline</span><span id="conn">Waiting for show</span><span id="room"></span><span id="ctrls"></span></div>
+  <div class="meta"><span class="pill off" id="pill">Offline</span><span id="conn">Waiting for show</span><span id="room"></span><span id="nlive"></span><span id="ctrls"></span></div>
  </div>
+ <section id="tgtsec">
+  <h2>Screens</h2>
+  <div id="tgt">
+   <button data-t="all">All<small id="n_all"></small></button><button data-t="stage">Stage<small id="n_stage"></small></button><button data-t="side">Sides<small id="n_side"></small></button>
+  </div>
+  <div id="scr"></div>
+ </section>
  <section>
   <h2>Visual</h2>
   <div class="row" id="vis"></div>
@@ -127,7 +145,7 @@ body.nojoin #join{display:block}body.nojoin .wrap{display:none}
  </div>
  <section>
   <h2>Show laptop mic input</h2>
-  <select id="dev"><option value="">Default input</option></select>
+  <div id="mics"><p class="hint">Waiting for a screen.</p></div>
   <p class="hint" id="note">Mixer line out works best. Changing input reloads the visual.</p>
  </section>
 </div>
@@ -148,11 +166,20 @@ let lastSeen = 0, lastV = '';
 const held = { v: 0, p: 0, l: 0, m: 0 };
 const CID = Math.random().toString(36).slice(2, 10);
 function hello() { send({ type: 'hello', cid: CID }); }
+// screen target for visual / colours / logo / intensity / layout / fullscreen. Tap tempo always goes to every screen.
+let TARGET = 'all';
+try { const t = localStorage.getItem('vr.target'); if (['all', 'stage', 'side'].includes(t)) TARGET = t; } catch (e) {}
+const sendT = m => { m.target = TARGET; send(m); };
+document.querySelectorAll('#tgt button').forEach(b => b.onclick = () => {
+  TARGET = b.dataset.t; try { localStorage.setItem('vr.target', TARGET); } catch (e) {}
+  held.v = held.p = held.l = held.m = 0; kTouched = 0; render();
+});
+const shows = new Map(); // sid -> { m, t }
 const VISUALS = [
   { v: 'tunnel', name: 'Tunnel', path: 'tunnel/' }, { v: 'stripes', name: 'Stripes', path: 'stripes/' },
   { v: 'mandala', name: 'Mandala', path: 'stripes/' }, { v: 'ghoomar', name: 'Ghoomar', path: 'ghoomar/' },
-  { v: 'patola', name: 'Patola', path: 'patola/', probe: true }, { v: 'jali', name: 'Jali', path: 'jali/', probe: true },
-  { v: 'raas', name: 'Raas', path: 'raas/', probe: true }
+  { v: 'patola', name: 'Patola', path: 'patola/', probe: true }, { v: 'jali', name: 'Jali', path: 'jali/', probe: true }
+  // raas/ is unlisted for now. New visuals: add { v, name, path, probe: true } here and a line in show.html VIS.
 ];
 async function buildVis() {
   const ok = await Promise.all(VISUALS.map(x => !x.probe ? true :
@@ -161,51 +188,94 @@ async function buildVis() {
   VISUALS.forEach((x, i) => {
     if (!ok[i]) return;
     const b = document.createElement('button'); b.dataset.v = x.v; b.textContent = x.name;
-    b.onclick = () => { send({ type: 'visual', v: x.v }); mark('#vis', 'v', x.v); held.v = performance.now(); $('rmodes').hidden = x.v !== 'raas'; };
+    b.onclick = () => { sendT({ type: 'visual', v: x.v }); mark('#vis', 'v', x.v); held.v = performance.now(); $('rmodes').hidden = x.v !== 'raas'; };
     row.appendChild(b);
   });
   if (lastV) mark('#vis', 'v', lastV);
 }
 buildVis();
-document.querySelectorAll('#pal button').forEach(b => b.onclick = () => { send({ type: 'pal', name: b.dataset.p }); mark('#pal', 'p', b.dataset.p); held.p = performance.now(); });
-document.querySelectorAll('#logos button').forEach(b => b.onclick = () => { send({ type: 'clogo', name: b.dataset.l }); mark('#logos', 'l', b.dataset.l); held.l = performance.now(); });
-document.querySelectorAll('#modes button').forEach(b => b.onclick = () => { send({ type: 'mode', mode: +b.dataset.m }); mark('#modes', 'm', b.dataset.m); held.m = performance.now(); });
-function mark(sel, attr, val) { document.querySelectorAll(sel + ' button').forEach(b => b.classList.toggle('sel', b.dataset[attr] === val)); }
+document.querySelectorAll('#pal button').forEach(b => b.onclick = () => { sendT({ type: 'pal', name: b.dataset.p }); mark('#pal', 'p', b.dataset.p); held.p = performance.now(); });
+document.querySelectorAll('#logos button').forEach(b => b.onclick = () => { sendT({ type: 'clogo', name: b.dataset.l }); mark('#logos', 'l', b.dataset.l); held.l = performance.now(); });
+document.querySelectorAll('#modes button').forEach(b => b.onclick = () => { sendT({ type: 'mode', mode: +b.dataset.m }); mark('#modes', 'm', b.dataset.m); held.m = performance.now(); });
+function mark(sel, attr, val, also) { document.querySelectorAll(sel + ' button').forEach(b => { b.classList.toggle('sel', b.dataset[attr] === val); b.classList.toggle('part', !!also && b.dataset[attr] !== val && also.includes(b.dataset[attr])); }); }
 $('tap').addEventListener('pointerdown', e => { e.preventDefault(); send({ type: 'tap' }); flash(); });
 addEventListener('keydown', e => { if (e.key === ' ' || e.key === 't' || e.key === 'T') { e.preventDefault(); send({ type: 'tap' }); flash(); } });
 let flashing = false;
 function flash() { flashing = true; $('light').classList.add('on'); setTimeout(() => { flashing = false; $('light').classList.remove('on'); }, 90); }
 let kTouched = 0;
-$('k').oninput = () => { kTouched = performance.now(); $('kv').textContent = (+$('k').value).toFixed(2); send({ type: 'k', value: +$('k').value }); };
-$('fs').onclick = () => send({ type: 'fs' });
-$('dev').onchange = () => send({ type: 'input', id: $('dev').value, label: $('dev').selectedOptions[0] ? $('dev').selectedOptions[0].textContent : '' });
+$('k').oninput = () => { kTouched = performance.now(); $('kv').textContent = (+$('k').value).toFixed(2); sendT({ type: 'k', value: +$('k').value }); };
+$('fs').onclick = () => sendT({ type: 'fs' });
 let devKey = '';
-function showDevs(list, cur) {
-  const k = JSON.stringify(list || []) + '|' + (cur || ''); if (k === devKey) return; devKey = k;
-  const sel = $('dev'); sel.innerHTML = '<option value="">Default input</option>';
-  (list || []).forEach(x => { const o = document.createElement('option'); o.value = x.id; o.textContent = x.label; sel.appendChild(o); });
-  sel.value = cur || '';
+const VNAME = v => (VISUALS.find(x => x.v === v) || { name: v || '?' }).name;
+const RNAME = { stage: 'Stage', side: 'Side' };
+const esc = t => String(t).replace(/[&<>"']/g, c => '&#' + c.charCodeAt(0) + ';');
+// one mic picker per live screen, so two windows on one Mac never mix their input lists
+function showDevs(live) {
+  const k = JSON.stringify(live.map(x => [x.sid, x.m.screen, x.m.devs, x.m.dev, x.m.audio])); if (k === devKey) return; devKey = k;
+  const box = $('mics'); box.innerHTML = '';
+  if (!live.length) { box.innerHTML = '<p class="hint">Waiting for a screen.</p>'; return; }
+  live.forEach(x => {
+    const d = document.createElement('div'); d.className = 'mic';
+    const l = document.createElement('label'); l.textContent = (RNAME[x.m.screen] || 'Side') + ' screen ' + (x.sid.length === 4 ? x.sid : '') + (x.m.audio ? ' · ' + x.m.audio : '');
+    const sel = document.createElement('select'); sel.innerHTML = '<option value="">Default input</option>';
+    (x.m.devs || []).forEach(o => { const e = document.createElement('option'); e.value = o.id; e.textContent = o.label; sel.appendChild(e); });
+    sel.value = x.m.dev || '';
+    sel.onchange = () => send({ type: 'input', sid: x.m.sid || undefined, target: x.m.sid ? undefined : 'all', id: sel.value, label: sel.selectedOptions[0] ? sel.selectedOptions[0].textContent : '' });
+    d.appendChild(l); d.appendChild(sel); box.appendChild(d);
+  });
 }
 function onStatus(m, via) {
   if (m.type !== 'status') return;
   const now = performance.now(); lastSeen = now;
   if (via === 'mqtt') lastNet = now; else lastBc = now;
-  pillUpdate();
+  const sid = m.sid || 'legacy'; if (!m.screen) m.screen = 'side';
+  shows.set(sid, { sid, m, t: now });
+  if (m.beatAge < 5000 && (!rep || rep.sid === sid)) { bpmNow = m.bpm || 0; beatAnchor = now - m.beatAge; }
+  pillUpdate(); render();
+}
+let rep = null;
+function liveShows() {
+  const now = performance.now(), out = [];
+  shows.forEach((x, k) => { if (now - x.t < 3000) out.push(x); else shows.delete(k); });
+  return out.sort((a, b) => (a.m.screen === 'stage' ? 0 : 1) - (b.m.screen === 'stage' ? 0 : 1) || (a.sid < b.sid ? -1 : 1));
+}
+function render() {
+  const now = performance.now(), live = liveShows();
+  document.querySelectorAll('#tgt button').forEach(b => b.classList.toggle('sel', b.dataset.t === TARGET));
+  const nSt = live.filter(x => x.m.screen === 'stage').length, nSd = live.length - nSt;
+  $('n_all').textContent = live.length + ' live'; $('n_stage').textContent = nSt + ' live'; $('n_side').textContent = nSd + ' live';
+  $('nlive').textContent = live.length ? live.length + (live.length === 1 ? ' screen live' : ' screens live') : '';
+  // status row: Stage: Tunnel, Kumkum · Sides: Patola, Mor
+  const part = (role, label) => {
+    const g = live.filter(x => x.m.screen === role); if (!g.length) return '';
+    const txt = [...new Set(g.map(x => VNAME(x.m.v) + ', ' + (x.m.pal || '?') + (x.m.logo === 'off' ? ', no logo' : '')))].join(' / ');
+    return '<b>' + label + ':</b> ' + esc(txt);
+  };
+  $('scr').innerHTML = live.length ? [part('stage', 'Stage'), part('side', nSd > 1 ? 'Sides' : 'Side')].filter(Boolean).join(' · ') : '<span class="none">No screens live</span>';
+  showDevs(live);
+  const grp = TARGET === 'all' ? live : live.filter(x => x.m.screen === TARGET);
+  rep = grp[0] || null;
+  if (!rep) {
+    $('conn').textContent = live.length ? 'No ' + (TARGET === 'stage' ? 'stage' : 'side') + ' screen live' : (ROOM ? 'Show not found in room ' + ROOM : '');
+    ['#vis', '#pal', '#logos', '#modes'].forEach(s => mark(s, 'x', '\u0000'));
+    $('bpm').textContent = '·'; $('lvl').firstChild.style.width = '0%';
+    return;
+  }
+  const m = rep.m;
   $('conn').textContent = m.started ? 'Show live' : 'Show open, click it to start';
-  bpmNow = m.bpm || 0; if (m.beatAge < 5000) beatAnchor = now - m.beatAge;
-  showDevs(m.devs, m.dev);
-  if (m.K && performance.now() - kTouched > 1500) { $('k').value = m.K; $('kv').textContent = (+m.K).toFixed(2); }
-  $('bpm').textContent = m.bpm ? Math.round(m.bpm) : '\u00b7';
-  $('lvl').firstChild.style.width = Math.round(m.level * 100) + '%';
-
+  if (m.K && now - kTouched > 1500) { $('k').value = m.K; $('kv').textContent = (+m.K).toFixed(2); }
+  $('bpm').textContent = m.bpm ? Math.round(m.bpm) : '·';
+  $('lvl').firstChild.style.width = Math.round((m.level || 0) * 100) + '%';
+  // highlight the targeted group: one value = solid; if the group differs, stage (or first) is solid and the rest dashed
+  const vals = f => [...new Set(grp.map(x => String(x.m[f])))];
   const HOLD = 1500;
-  if (m.v) { lastV = m.v; if (now - held.v > HOLD) mark('#vis', 'v', m.v); }
+  if (m.v) { lastV = m.v; if (now - held.v > HOLD) mark('#vis', 'v', m.v, vals('v')); }
   $('rmodes').hidden = (now - held.v > HOLD ? m.v : document.querySelector('#vis button.sel')?.dataset.v) !== 'raas';
-  if (m.mode && now - held.m > HOLD) mark('#modes', 'm', String(m.mode));
-  if (m.pal && now - held.p > HOLD) mark('#pal', 'p', m.pal);
-  if (typeof m.logo === 'string' && now - held.l > HOLD) mark('#logos', 'l', m.logo);
-  if (typeof m.ctrls === 'number') { const n = Math.max(1, m.ctrls); $('ctrls').textContent = n + (n === 1 ? ' controller connected' : ' controllers connected'); }
-  $('note').textContent = (m.audio || '') + '. Mixer line out works best. Changing input reloads the visual.';
+  if (m.mode && now - held.m > HOLD) mark('#modes', 'm', String(m.mode), vals('mode'));
+  if (m.pal && now - held.p > HOLD) mark('#pal', 'p', m.pal, vals('pal'));
+  if (typeof m.logo === 'string' && now - held.l > HOLD) mark('#logos', 'l', m.logo, vals('logo'));
+  const nc = Math.max(1, ...live.map(x => x.m.ctrls || 0)); $('ctrls').textContent = nc + (nc === 1 ? ' controller connected' : ' controllers connected');
+  $('note').textContent = 'Mixer line out works best. Changing input reloads the visual on that screen.';
 }
 function pillUpdate() {
   const now = performance.now(), p = $('pill');
@@ -215,7 +285,7 @@ function pillUpdate() {
   else if (relay && relay.mqttUp()) { t = 'Online, waiting for show'; c = 'off'; }
   p.textContent = t; p.className = 'pill ' + c;
 }
-setInterval(() => { pillUpdate(); if (performance.now() - lastSeen > 2500) { $('conn').textContent = ROOM ? 'Show not found in room ' + ROOM : ''; $('ctrls').textContent = ''; } }, 500);
+setInterval(() => { pillUpdate(); render(); if (performance.now() - lastSeen > 2500) { $('conn').textContent = ROOM ? 'Show not found in room ' + ROOM : ''; $('ctrls').textContent = ''; } }, 500);
 setInterval(hello, 3000);
 // local beat light: phase-locked to the show's last beat + BPM (status arrives at ~4 Hz over the internet)
 (function beat() {

@@ -29,6 +29,10 @@ section.how{margin-top:40px;background:var(--bg);border-left:6px solid var(--gol
 .keys{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px 18px;font-size:15px}
 kbd{display:inline-block;min-width:28px;text-align:center;background:var(--deep);border:2px solid var(--dim);border-radius:6px;padding:1px 7px;color:var(--gold);font-family:inherit}
 a.lk{color:var(--gold);font-weight:500}
+.launch{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:26px}
+a.lb{display:block;text-decoration:none;text-align:center;background:var(--red);color:#fff;border:3px solid var(--gold);border-radius:14px;padding:18px 16px;font-family:"Rozha";font-size:28px;line-height:1.15}
+a.lb small{display:block;font-family:"Poppins",system-ui,sans-serif;font-size:14px;color:var(--cream);margin-top:4px}
+a.lb:hover,a.lb:focus-visible{border-color:#fff;outline:none}
 footer{text-align:center;padding:28px 16px 40px;font-size:13px;letter-spacing:.14em;color:var(--dim)}
 </style>
 </head>
@@ -38,11 +42,15 @@ footer{text-align:center;padding:28px 16px 40px;font-size:13px;letter-spacing:.1
  <p>Visuals for the LED screens</p>
 </header>
 <main>
+ <div class="launch">
+  <a class="lb" href="show.html?screen=side" target="_blank">Side screen<small>1920x1200 or 1200x750 LEDs</small></a>
+  <a class="lb" href="show.html?screen=stage" target="_blank">Stage 3000x720<small>the big stage LED</small></a>
+  <a class="lb" href="control.html" target="_blank">Phone control<small>All, Stage or Sides</small></a>
+ </div>
  <div class="grid">
   <a class="card" href="show.html?v=tunnel" target="_blank"><img src="img/tunnel.jpg" alt=""><div><b class="num">01</b><h2>Bandhani Tunnel</h2><span>Fly into rings of bandhani. Every dhol hit fires a gold ring and a camera punch.</span></div></a>
   <a class="card" href="show.html?v=stripes" target="_blank"><img src="img/stripes.jpg" alt=""><div><b class="num">02</b><h2>Bandhani Stripes</h2><span>Bandhani bands scroll and swell on each drum hit. Mandala is in the control panel.</span></div></a>
   <a class="card" href="show.html?v=ghoomar" target="_blank"><img src="img/ghoomar.jpg" alt=""><div><b class="num">03</b><h2>Ghoomar Mandala</h2><span>A bandhani mandala that spins with the tempo and flares on every hit.</span></div></a>
-  <a class="card" href="show.html?v=raas" target="_blank"><img src="img/raas.jpg" alt=""><div><b class="num">04</b><h2>Raas</h2><span>Garba dancers seen from above. They jump on every dhol hit and twirl on the taali. Circles, Crowd and Bloom layouts on the phone.</span></div></a>
  </div>
  <section class="how">
   <h3>For the VJ</h3>
@@ -51,6 +59,8 @@ footer{text-align:center;padding:28px 16px 40px;font-size:13px;letter-spacing:.1
    <li>Scan that QR with your phone (or type the code at <a class="lk" href="control.html" target="_blank">control.html</a>). Or open CONTROL on the laptop itself: same Chrome works even offline.</li>
    <li>Click the show to start, press <b>Allow</b> for the microphone, then press <kbd>F</kbd> for fullscreen.</li>
    <li>More phones can join with the same code (VJ and organiser together). Every phone stays in sync and shows how many controllers are connected. Last tap wins.</li>
+   <li>Big stage LED: open <a class="lk" href="show.html?screen=stage" target="_blank">Stage 3000x720</a> (or pick Stage screen on the show's start screen), drag that window onto the stage LED output, click it, press <kbd>F</kbd>. Side LEDs use Side screen. All windows join the same room.</li>
+   <li>On the phone, the Screens bar picks who a tap goes to: All, Stage or Sides. Tap tempo always goes to every screen.</li>
    <li>Pick the centre logo from the phone: Vibe Raas, Vibe Tribe, Sach Raatri, Clapper or Off. It stays put when you switch visuals.</li>
   </ol>
   <p class="keys"><span>Press <kbd>Q</kbd> on the show to see the code again.</span><span>Press <kbd>L</kbd> on the show to cycle the centre logo.</span><span>Phone control needs internet on both the phone and the LED laptop.</span><span>Mixer line out works best, or the laptop mic.</span></p>
