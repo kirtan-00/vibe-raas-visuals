@@ -1,25 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1180" width="1400" height="1180">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 220 1400 900" width="1400" height="900">
  <defs>
   <pattern id="teeth" width="128" height="260" patternUnits="userSpaceOnUse">
-   <rect width="128" height="260" fill="#111214"/>
-   <polygon points="46,0 112,0 66,260 0,260" fill="#EFE9DB"/>
+   <rect width="128" height="260" fill="#111111"/>
+   <polygon points="46,0 112,0 66,260 0,260" fill="#FFFFFF"/>
   </pattern>
-  <clipPath id="tileclip"><rect width="1024" height="1024" rx="230"/></clipPath>
  </defs>
- <g transform="translate(320 0) scale(0.7421875)">
-  <g clip-path="url(#tileclip)">
-   <rect width="1024" height="1024" fill="#1b1d20"/>
-   <rect x="150" y="470" width="724" height="372" rx="34" fill="#111214"/>
-   <line x1="222" y1="572" x2="802" y2="572" stroke="#2d3034" stroke-width="18" stroke-linecap="round"/>
-   <line x1="222" y1="660" x2="690" y2="660" stroke="#2d3034" stroke-width="18" stroke-linecap="round"/>
-   <line x1="222" y1="748" x2="600" y2="748" stroke="#2d3034" stroke-width="18" stroke-linecap="round"/>
-   <circle cx="792" cy="748" r="52" fill="#E6FF2B"/>
-   <g transform="rotate(-16 214 432)">
-    <rect x="150" y="330" width="772" height="176" rx="26" fill="url(#teeth)"/>
-   </g>
-   <circle cx="214" cy="432" r="30" fill="#E6FF2B"/>
+ <g transform="translate(232 30) scale(0.88)">
+  <rect x="150" y="470" width="724" height="372" rx="34" fill="#FFFFFF"/>
+  <g transform="rotate(-16 214 432)">
+   <rect x="150" y="330" width="772" height="176" rx="26" fill="url(#teeth)" stroke="#FFFFFF" stroke-width="14"/>
   </g>
-  <rect width="1024" height="1024" rx="230" fill="none" stroke="#26292d" stroke-width="10"/>
+  <circle cx="214" cy="432" r="30" fill="#FFFFFF"/>
  </g>
- <text x="700" y="1120" text-anchor="middle" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-weight="700" font-size="250" letter-spacing="-5" fill="#EFE9DB">clapper<tspan fill="#E6FF2B">.in</tspan></text>
+ <text x="700" y="1050" text-anchor="middle" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-weight="700" font-size="250" letter-spacing="-5" fill="#FFFFFF">clapper.in</text>
 </svg>
