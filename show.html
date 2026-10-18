@@ -23,7 +23,9 @@ const VIS = {
   tunnel:  'tunnel/?embed=1',
   stripes: 'stripes/?embed=1&scene=1',
   mandala: 'stripes/?embed=1&scene=2',
-  ghoomar: 'ghoomar/?embed=1'
+  ghoomar: 'ghoomar/?embed=1',
+  patola:  'patola/?embed=1',
+  jali:    'jali/?embed=1'
 };
 const Q = new URLSearchParams(location.search);
 let cur = VIS[Q.get('v')] ? Q.get('v') : 'tunnel';

@@ -126,12 +126,16 @@ function startDemo() {
   }, 25);
 }
 function bins(lo, hi) { const hz = ac.sampleRate / analyser.fftSize; return [Math.max(1, Math.floor(lo / hz)), Math.min(fd.length - 1, Math.ceil(hi / hz))]; }
-let KB = null, CB = null;
+let KB = null, CB = null, HB = null;
+const DIM = document.createElement('div'); DIM.style.cssText = 'position:fixed;inset:0;background:#000;pointer-events:none;z-index:3;opacity:0'; document.body.appendChild(DIM); let dimQ = -1;
+function setDim(v) { const q = Math.round(v * 40); if (q !== dimQ) { dimQ = q; DIM.style.opacity = (q / 40).toFixed(3); } }
+function clapEnv(now) { const a = now - B.lastClap; return a < 0 ? 0 : Math.min(1, a / 0.03) * Math.exp(-a * 7); }
+
 function stats(arr) { let m = 0; for (const f of arr) m += f; m /= arr.length; let v = 0; for (const f of arr) v += (f - m) * (f - m); return [m, Math.sqrt(v / arr.length)]; }
 function analyse(now, dt) {
-  if (!analyser || ac.state !== 'running' || (!srcNode && !DEMO)) { LV.energy = lerp(LV.energy, 0.35, dt); return; }
+  if (!analyser || ac.state !== 'running' || (!srcNode && !DEMO)) { LV.hat = (LV.hat || 0) * .95; LV.loud = 0.35; setDim(0); LV.energy = lerp(LV.energy, 0.35, dt); return; }
   analyser.getByteFrequencyData(fd);
-  if (!KB) { KB = bins(40, 150); CB = bins(1500, 4000); }
+  if (!KB) { KB = bins(40, 150); CB = bins(1500, 4000); HB = bins(6000, 12000); }
   // spectral flux per band (positive bin differences), plus band level
   let kf = 0, cf = 0, low = 0, all = 0;
   for (let i = 1; i < fd.length; i++) {
@@ -144,13 +148,15 @@ function analyse(now, dt) {
   LV.pkA = Math.max(all, LV.pkA * 0.9993, 0.002); LV.pkL = Math.max(low, LV.pkL * 0.9993, 0.004);
   LV.lowN = low / LV.pkL;
   const a = all / LV.pkA; LV.energy = a > LV.energy ? lerp(LV.energy, a, .25) : lerp(LV.energy, a, .03);
+  { let hv = 0; for (let i = HB[0]; i <= HB[1]; i++) { const m = fd[i] / 255; hv += m * m; } hv /= (HB[1] - HB[0] + 1);
+    const hn = Math.min(1.5, hv / (LV.pkHat = Math.max(hv, (LV.pkHat || .001) * 0.9995, 0.0005))); LV.hat = hn > (LV.hat || 0) ? lerp(LV.hat || 0, hn, .5) : lerp(LV.hat || 0, hn, .08); LV.loud = clamp(LV.energy, 0, 1.2); setDim(0.34 * (1 - clamp(LV.energy, 0, 1))); }
   LV.pkKF = Math.max(kf, LV.pkKF * 0.9995, 0.005); LV.pkCF = Math.max(cf, LV.pkCF * 0.9995, 0.003);
   const kn = kf / LV.pkKF, cn = cf / LV.pkCF;
   LV.kF.push(kn); if (LV.kF.length > 45) LV.kF.shift();
   LV.cF.push(cn); if (LV.cF.length > 45) LV.cF.shift();
   const [km, ks] = stats(LV.kF), [cm, cs] = stats(LV.cF);
   if (kn > km + 1.5 * ks + 0.12 && LV.lowN > 0.35 && low > 0.002 && now - B.lastOnset > 0.24) onset(now);
-  if (cn > cm + 1.8 * cs + 0.15 && cf > 0.004 && now - B.lastClap > 0.13) { B.lastClap = now; B.claps++; }
+  if (cn > cm + 1.8 * cs + 0.15 && cf > 0.004 && now - B.lastClap > 0.13) { B.lastClap = now; B.claps++; onClap(now); }
 }
 function onset(now) {
   const ioi = now - B.lastOnset; B.lastOnset = now;
@@ -371,7 +377,7 @@ function render(now, dt) {
   // tunnel speed follows tempo and energy
   // steady base speed; only drum onsets add a surge that decays after each hit
   const surge = punchEnv(now - B.lastBeat) * 4.0 * T.K;
-  const sp = 1.8 * (B.bpm / 128) + surge;
+  const sp = (1.0 + 1.3 * (LV.loud || .35)) * (B.bpm / 128) + surge;
   T.travel += sp * dt;
   T.dirS = lerp(T.dirS, T.dir, 1 - Math.exp(-dt * 1.6));
   T.spin += T.dirS * 0.16 * dt;
@@ -394,7 +400,7 @@ function render(now, dt) {
   gl.useProgram(prog);
   gl.uniform2f(U.uRes, W, H); gl.uniform1f(U.uTime, now % 1000);
   gl.uniform1f(U.uTravel, T.travel); gl.uniform1f(U.uSpin, T.spin); gl.uniform1f(U.uTwist, T.twist);
-  gl.uniform1f(U.uPunch, pu); gl.uniform1f(U.uEnergy, 0.4); gl.uniform1f(U.uBeat, bt);
+  gl.uniform1f(U.uPunch, pu); gl.uniform1f(U.uEnergy, 0.2 + 0.45 * (LV.loud || .35) + 0.25 * clamp(LV.hat || 0, 0, 1.2)); gl.uniform1f(U.uBeat, bt);
   gl.uniform1f(U.uClapAge, now - T.clapT); gl.uniform1f(U.uClapA, T.clapA); gl.uniform1f(U.uK, T.K); gl.uniform1f(U.uMaxLR, maxLR);
   gl.uniform1fv(U.uRingLR, ringLR); gl.uniform1fv(U.uRingA, ringA);
   gl.drawArrays(gl.TRIANGLES, 0, 3);

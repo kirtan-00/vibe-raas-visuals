@@ -47,10 +47,7 @@ select{font:inherit;font-size:16px;width:100%;min-height:52px;background:var(--d
  </div>
  <section>
   <h2>Visual</h2>
-  <div class="row" id="vis">
-   <button data-v="tunnel">Tunnel</button><button data-v="stripes">Stripes</button>
-   <button data-v="mandala">Mandala</button><button data-v="ghoomar">Ghoomar</button>
-  </div>
+  <div class="row" id="vis"></div>
  </section>
  <section>
   <h2>Colours</h2>
@@ -88,7 +85,24 @@ const ch = new BroadcastChannel('vibe-raas');
 const $ = id => document.getElementById(id);
 const send = m => ch.postMessage(m);
 let logoOn = false, lastSeen = 0, curV = '', curPal = '';
-document.querySelectorAll('#vis button').forEach(b => b.onclick = () => { send({ type: 'visual', v: b.dataset.v }); mark('#vis', 'v', b.dataset.v); });
+const VISUALS = [
+  { v: 'tunnel', name: 'Tunnel', path: 'tunnel/' }, { v: 'stripes', name: 'Stripes', path: 'stripes/' },
+  { v: 'mandala', name: 'Mandala', path: 'stripes/' }, { v: 'ghoomar', name: 'Ghoomar', path: 'ghoomar/' },
+  { v: 'patola', name: 'Patola', path: 'patola/', probe: true }, { v: 'jali', name: 'Jali', path: 'jali/', probe: true }
+];
+async function buildVis() {
+  const ok = await Promise.all(VISUALS.map(x => !x.probe ? true :
+    fetch(x.path + 'index.html', { method: 'HEAD', cache: 'no-store' }).then(r => r.ok).catch(() => false)));
+  const row = $('vis'); row.innerHTML = '';
+  VISUALS.forEach((x, i) => {
+    if (!ok[i]) return;
+    const b = document.createElement('button'); b.dataset.v = x.v; b.textContent = x.name;
+    b.onclick = () => { send({ type: 'visual', v: x.v }); mark('#vis', 'v', x.v); };
+    row.appendChild(b);
+  });
+  if (curV) mark('#vis', 'v', curV);
+}
+buildVis();
 document.querySelectorAll('#pal button').forEach(b => b.onclick = () => { send({ type: 'pal', name: b.dataset.p }); mark('#pal', 'p', b.dataset.p); });
 function mark(sel, attr, val) { document.querySelectorAll(sel + ' button').forEach(b => b.classList.toggle('sel', b.dataset[attr] === val)); }
 $('tap').addEventListener('pointerdown', e => { e.preventDefault(); send({ type: 'tap' }); flash(); });

@@ -74,7 +74,7 @@ function envAt(dt) {
   const d = (dt - ATT) / DEC; if (d >= 1) return 0;
   const y = 1 - d; return y * y * (3 - 2 * y);
 }
-const B = { bpm: 128, period: 60 / 128, beats: [], count: 0, next: 0, lastOnset: -99, onsets: [], taps: [], src: 'auto' };
+const B = { bpm: 128, period: 60 / 128, beats: [], count: 0, next: 0, lastOnset: -99, onsets: [], taps: [], src: 'auto', claps: 0, lastClap: -99 };
 for (let i = 0; i < 4; i++) B.beats.push({ t: -99, n: -i });
 function fireBeat(t) {
   B.count++;
@@ -130,6 +130,13 @@ function startDemo() {
     g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(1, t + 0.004); g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
     o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.35);
   }
+  function clap(t) {
+    const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    s.buffer = nb; f.type = 'bandpass'; f.frequency.value = 2400; f.Q.value = 0.9;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(1.6, t + 0.003); g.gain.exponentialRampToValueAtTime(0.4, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(1.4, t + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
+    s.connect(f); f.connect(g); g.connect(out); s.start(t); s.stop(t + 0.16);
+  }
   function hat(t, lvl) {
     const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
     s.buffer = nb; f.type = 'highpass'; f.frequency.value = 6000;
@@ -142,20 +149,27 @@ function startDemo() {
     o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.3);
   }
   setInterval(() => {
-    while (t0 < ac.currentTime + 0.15) { kick(t0); hat(t0 + per / 2, 0.35); hat(t0 + per / 4, 0.12); if (k % 2) tone(t0 + per * 0.75); t0 += per; k++; }
+    while (t0 < ac.currentTime + 0.15) { kick(t0); hat(t0 + per / 2, 0.35); hat(t0 + per / 4, 0.12); if (k % 2) { tone(t0 + per * 0.75); clap(t0 + per * 0.5); } t0 += per; k++; }
   }, 25);
 }
+const DIM = document.createElement('div'); DIM.style.cssText = 'position:fixed;inset:0;background:#000;pointer-events:none;z-index:3;opacity:0'; document.body.appendChild(DIM); let dimQ = -1;
+function setDim(v) { const q = Math.round(v * 40); if (q !== dimQ) { dimQ = q; DIM.style.opacity = (q / 40).toFixed(3); } }
+function clapEnv(now) { const a = now - B.lastClap; return a < 0 ? 0 : Math.min(1, a / 0.03) * Math.exp(-a * 7); }
 function band(lo, hi) {
   const hz = ac.sampleRate / analyser.fftSize; const a = Math.max(1, Math.floor(lo / hz)), b = Math.min(fd.length - 1, Math.ceil(hi / hz));
   let s = 0; for (let i = a; i <= b; i++) { const v = fd[i] / 255; s += v * v; } return s / (b - a + 1);
 }
 function analyse(now, dt) {
-  if (!analyser || ac.state !== 'running' || (!srcNode && !DEMO)) { LV.lowN *= .95; LV.midN *= .95; LV.highN *= .95; LV.energy = lerp(LV.energy, 0.35, dt); return; }
+  if (!analyser || ac.state !== 'running' || (!srcNode && !DEMO)) { LV.hat = (LV.hat || 0) * .95; LV.loud = 0.35; setDim(0); LV.lowN *= .95; LV.midN *= .95; LV.highN *= .95; LV.energy = lerp(LV.energy, 0.35, dt); return; }
   analyser.getByteFrequencyData(fd);
   const low = band(40, 150), mid = band(300, 2000), high = band(4000, 12000), all = (low + mid + high) / 3;
   LV.pkL = Math.max(low, LV.pkL * 0.9993, 0.004); LV.pkM = Math.max(mid, LV.pkM * 0.9993, 0.002); LV.pkH = Math.max(high, LV.pkH * 0.9993, 0.001); LV.pkA = Math.max(all, LV.pkA * 0.9993, 0.003);
   LV.lowN = low / LV.pkL; LV.midN = lerp(LV.midN, mid / LV.pkM, .35); LV.highN = lerp(LV.highN, high / LV.pkH, .5);
   const a = all / LV.pkA; LV.energy = a > LV.energy ? lerp(LV.energy, a, .25) : lerp(LV.energy, a, .03);
+  { const hv = band(6000, 12000), hn = Math.min(1.5, hv / (LV.pkHat = Math.max(hv, (LV.pkHat || .001) * 0.9995, 0.0005))); LV.hat = hn > (LV.hat || 0) ? lerp(LV.hat || 0, hn, .5) : lerp(LV.hat || 0, hn, .08); LV.loud = clamp(LV.energy, 0, 1.2); setDim(0.34 * (1 - clamp(LV.energy, 0, 1))); }
+  { const cl = band(1500, 4000), cfx = Math.max(0, cl - (LV.prevC || 0)); LV.prevC = cl; LV.pkCF = Math.max(cfx, (LV.pkCF || .002) * 0.999, 0.0008); const cn = cfx / LV.pkCF;
+    LV.cf = LV.cf || []; LV.cf.push(cn); if (LV.cf.length > 45) LV.cf.shift(); let cm = 0; for (const f of LV.cf) cm += f; cm /= LV.cf.length; let cv = 0; for (const f of LV.cf) cv += (f - cm) * (f - cm); const cs = Math.sqrt(cv / LV.cf.length);
+    if (cn > cm + 2 * cs + 0.12 && cn > 0.3 && now - (B.lastClap || -9) > 0.13) { B.lastClap = now; B.claps = (B.claps || 0) + 1; } }
   const flux = Math.max(0, low - LV.prevLow) / LV.pkL; LV.prevLow = low;
   LV.flux.push(flux); if (LV.flux.length > 45) LV.flux.shift();
   let m = 0; for (const f of LV.flux) m += f; m /= LV.flux.length;
@@ -382,7 +396,8 @@ const Stripes = {
     g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
     g.fillStyle = p.deep; g.fillRect(0, 0, W, H);
     // scroll speed follows the music: idle drift, energy pushes it, each kick shoves it forward
-    this.t += (90 + 900 * beatEnv(now, 0) * K) * U * dt;   // drum hits only
+    this.t += ((55 + 110 * (LV.loud || .35)) * (B.bpm / 128) + 900 * beatEnv(now, 0) * K) * U * dt;   // loudness + tempo base, kick shove
+    const ce = clapEnv(now) * K, hh = clamp(LV.hat || 0, 0, 1.2);
     const t0 = B.beats.length ? B.beats[0].t : -9;
     // draw outer bands first so the centre band sits on top when they swell
     const order = [...Array(nb).keys()].sort((a, b) => Math.abs(b - mid) - Math.abs(a - mid));
@@ -393,7 +408,9 @@ const Stripes = {
       const h = bh * sy, y = bh * (i + 0.5) - h / 2;
       const off = ((this.t * (0.7 + 0.15 * (i % 3)) * dir) % b.gap + b.gap) % b.gap;
       g.drawImage(b.strip, -b.gap - off, y, b.strip.width, h);
-      if (e > 0.02) { g.globalCompositeOperation = 'lighter'; g.globalAlpha = 0.16 * e; g.fillStyle = p.gold; g.fillRect(0, y, W, h); g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1; }
+      const fl = 0.16 * e + ((i & 1) === (B.claps & 1) ? 0.2 * ce : 0);   // kick swell + clap flicks alternate bands
+      if (fl > 0.01) { g.globalCompositeOperation = 'lighter'; g.globalAlpha = Math.min(.5, fl); g.fillStyle = p.gold; g.fillRect(0, y, W, h); g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1; }
+      if (hh > 0.05) { g.globalAlpha = Math.min(.9, 0.15 + 0.6 * hh); g.fillStyle = p.gold; g.fillRect(0, y, W, 2 * U); g.fillRect(0, y + h - 2 * U, W, 2 * U); g.globalAlpha = 1; }   // hats: bead lines shimmer
     }
   }
 };
@@ -502,7 +519,8 @@ const Mandala = {
     const p = P(), K = S.K, R = this.R;
     g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
     g.drawImage(this.bgL, 0, 0);
-    this.spin += (0.25 + 1.4 * beatEnv(now, 0)) * dt * (0.6 + .4 * K);   // drum hits only
+    this.spin += ((0.12 + 0.28 * (LV.loud || .35)) * (B.bpm / 128) + 1.4 * beatEnv(now, 0)) * dt * (0.6 + .4 * K);
+    const ce = clapEnv(now) * K, hh = clamp(LV.hat || 0, 0, 1.2);
     for (const c of this.cells) {
       const dir = c.flip;
       // outer chaniya hem: scallops
@@ -512,15 +530,16 @@ const Mandala = {
         if (i === 0) g.moveTo(c.cx + Math.cos(a) * hemR, c.cy + Math.sin(a) * hemR);
         g.quadraticCurveTo(c.cx + Math.cos(am) * rr * 1.04, c.cy + Math.sin(am) * rr * 1.04, c.cx + Math.cos(a2) * hemR, c.cy + Math.sin(a2) * hemR); }
       g.strokeStyle = rgba(p.gold, .75); g.lineWidth = 3 * U; g.stroke();
+      if (ce > 0.03) { g.globalCompositeOperation = 'lighter'; g.globalAlpha = 0.7 * ce; g.lineWidth = 9 * U; g.stroke(); g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1; }   // clap: rim flash
       for (let i = 0; i < nS; i++) { const a = a0 + (i + .5) / nS * TAU; g.fillStyle = p.gold; g.beginPath(); g.arc(c.cx + Math.cos(a) * hemR * 1.0, c.cy + Math.sin(a) * hemR * 1.0, 4 * U, 0, TAU); g.fill(); }
       // rings
       for (let i = 6; i >= 0; i--) {
         const e = envAt(now - B.beats[0].t - i * 0.035) * K;
         const r = R * (0.3 + i * 0.1) * (1 + 0.07 * e);
-        const spr = this.spr[i], sz = spr.width * (1 + 0.3 * e);
+        const spr = this.spr[i], sz = spr.width * (1 + 0.3 * e + (i & 1 ? 0.07 * hh : 0));
         const n = Math.floor(TAU * r / (spr.width * 1.18));
         const ang = this.spin * dir * (i % 2 ? -1 : 1) * (0.5 + 0.1 * i);
-        g.globalAlpha = 0.75 + 0.25 * e;
+        g.globalAlpha = Math.min(1, 0.7 + 0.25 * e + (i & 1 ? 0.12 * hh : 0));
         for (let k = 0; k < n; k++) {
           const a = ang + k / n * TAU, ca = Math.cos(a), sa = Math.sin(a);
           g.setTransform(ca, sa, -sa, ca, c.cx + ca * r, c.cy + sa * r);

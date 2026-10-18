@@ -153,14 +153,18 @@ function flux(lo, hi) {
   const a = Math.max(1, hzBin(lo)), b = Math.min(fd.length - 1, hzBin(hi));
   let s = 0; for (let i = a; i <= b; i++) { const d = fd[i] - pfd[i]; if (d > 0) s += d; } return s / ((b - a + 1) * 255);
 }
+const DIM = document.createElement('div'); DIM.style.cssText = 'position:fixed;inset:0;background:#000;pointer-events:none;z-index:3;opacity:0'; document.body.appendChild(DIM); let dimQ = -1;
+function setDim(v) { const q = Math.round(v * 40); if (q !== dimQ) { dimQ = q; DIM.style.opacity = (q / 40).toFixed(3); } }
+function clapEnv(now) { const a = now - B.lastClap; return a < 0 ? 0 : Math.min(1, a / 0.03) * Math.exp(-a * 7); }
 function adapt(hist, v, n) { hist.push(v); if (hist.length > n) hist.shift(); let m = 0; for (const f of hist) m += f; m /= hist.length; let q = 0; for (const f of hist) q += (f - m) * (f - m); return [m, Math.sqrt(q / hist.length)]; }
 function analyse(now, dt) {
-  if (!analyser || ac.state !== 'running' || (!srcNode && !DEMO)) { LV.lowN *= .95; LV.midN *= .95; LV.highN *= .95; LV.energy = lerp(LV.energy, 0.35, dt); return; }
+  if (!analyser || ac.state !== 'running' || (!srcNode && !DEMO)) { LV.hat = (LV.hat || 0) * .95; LV.loud = 0.35; setDim(0); LV.lowN *= .95; LV.midN *= .95; LV.highN *= .95; LV.energy = lerp(LV.energy, 0.35, dt); return; }
   analyser.getByteFrequencyData(fd);
   const low = band(40, 150), mid = band(300, 2000), high = band(4000, 12000), all = (low + mid + high) / 3;
   LV.pkL = Math.max(low, LV.pkL * 0.9993, 0.004); LV.pkM = Math.max(mid, LV.pkM * 0.9993, 0.002); LV.pkH = Math.max(high, LV.pkH * 0.9993, 0.001); LV.pkA = Math.max(all, LV.pkA * 0.9993, 0.003);
   LV.lowN = low / LV.pkL; LV.midN = lerp(LV.midN, mid / LV.pkM, .35); LV.highN = lerp(LV.highN, high / LV.pkH, .5);
   const a = all / LV.pkA; LV.energy = a > LV.energy ? lerp(LV.energy, a, .2) : lerp(LV.energy, a, .025);
+  { const hv = band(6000, 12000), hn = Math.min(1.5, hv / (LV.pkHat = Math.max(hv, (LV.pkHat || .001) * 0.9995, 0.0005))); LV.hat = hn > (LV.hat || 0) ? lerp(LV.hat || 0, hn, .5) : lerp(LV.hat || 0, hn, .08); LV.loud = clamp(LV.energy, 0, 1.2); setDim(0.34 * (1 - clamp(LV.energy, 0, 1))); }
   // dhol / kick: 40-150 Hz flux, adaptive threshold
   const kfr = flux(40, 150); LV.pkKF = Math.max(kfr, LV.pkKF * 0.999, 0.004); const kf = kfr / LV.pkKF;
   const [km, ks] = adapt(LV.kf, kf, 45);
@@ -168,7 +172,7 @@ function analyse(now, dt) {
   // taali / clap: 1.5-4 kHz transient
   const cfr = flux(1500, 4000); LV.pkCF = Math.max(cfr, LV.pkCF * 0.999, 0.003); const cf = cfr / LV.pkCF;
   const [cm, cs] = adapt(LV.cf, cf, 45);
-  if (cf > cm + 2 * cs + 0.12 && cf > 0.3 && now - B.lastClap > 0.13) { B.lastClap = now; B.claps++; }   // counted for the HUD only, visuals follow drums
+  if (cf > cm + 2 * cs + 0.12 && cf > 0.3 && now - B.lastClap > 0.13) { B.lastClap = now; B.claps++; M.clapT = now; M.clapK = 1; }
   pfd.set(fd);
 }
 function onset(now) {
@@ -364,7 +368,7 @@ function updateMotion(now, dt) {
   const K = S.K;
   // tempo drive: garba speeds up, so does the spin
   const tempo = clamp((B.bpm - 80) / 70, 0, 1.6);
-  const target = 0.55 + 1.0 * tempo * tempo;   // steady base spin from tempo only
+  const target = 0.4 + 1.0 * tempo * tempo + 0.45 * (LV.loud || .35);   // tempo + loudness
   M.spd = lerp(M.spd, target, clamp(dt * 0.8, 0, 1));
   let dirS = M.dir; M.dip = 0;
   if (M.rev) {
@@ -416,8 +420,8 @@ function drawDancer(g, d, now) {
     }
     // passing glint: mirrors catch a fixed stage light as they turn through it
     const gl = Math.cos(a - (-2.3)); const glint = gl > 0 ? Math.pow(gl, 18) : 0;
-    bumps[i] = b; const ca2 = now - (M.clapT || -9); const clapE = 0 && ca2 < 0.25 ? (1 - ca2 / 0.25) * (M.clapK || 0) * (0.5 + 0.5 * Math.sin(i * 2.4 + M.clapT * 7)) : 0;
-    d['l' + i] = Math.min(1, lit * 1.1 + glint * 0.55 + 0.2 * e + 0.6 * clapE);
+    bumps[i] = b; const ca2 = now - (M.clapT || -9); const clapE = ca2 < 0.25 ? (1 - ca2 / 0.25) * (M.clapK || 0) * (0.5 + 0.5 * Math.sin(i * 2.4 + M.clapT * 7)) : 0;
+    d['l' + i] = Math.min(1, lit * 1.1 + glint * (0.55 + 0.5 * (LV.hat || 0)) + (i & 1 ? 0.1 * (LV.hat || 0) : 0) + 0.2 * e + 0.55 * clapE * K);
   }
   for (let i = 0; i < N; i++) {
     const a = ang + i * step, s = s0 * (1 + bumps[i] * (1 - 0.6 * M.dip)), ca = Math.cos(a) * s, sa = Math.sin(a) * s;
